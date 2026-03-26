@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PaddleOCR 文档识别系统</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <script src="/static/js/pdf.min.js"></script>
+    <style>
+        .drop-zone { transition: all 0.3s ease; }
+        .drop-zone.dragover { border-color: #3b82f6; background-color: #eff6ff; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .spinner { animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .split-panel { height: calc(100vh - 220px); min-height: 500px; }
+        .tab-active { color: #4f46e5; border-bottom: 2px solid #4f46e5; font-weight: 600; }
+        .tab-inactive { color: #6b7280; border-bottom: 2px solid transparent; }
+        .tab-inactive:hover { color: #374151; }
+        #pdfCanvas { max-width: 100%; }
+        .history-item-active { background-color: #eff6ff !important; border-left: 3px solid #4f46e5; }
+        /* JSON viewer */
+        .json-viewer { background:#1a1a2e; color:#e2e8f0; font-family:'Consolas','Monaco','Courier New',monospace; font-size:13px; line-height:1.6; }
+        .json-viewer .jl { display:flex; min-height:21px; }
+        .json-viewer .jl:hover { background:rgba(255,255,255,0.04); }
+        .json-viewer .ln { min-width:45px; padding:0 12px 0 8px; text-align:right; color:#4a5568; user-select:none; flex-shrink:0; border-right:1px solid #2d2d4a; }
+        .json-viewer .lc { padding-left:12px; white-space:pre; }
+        .jk { color:#7dd3fc; } .js { color:#86efac; } .jn { color:#fbbf24; } .jb { color:#c084fc; } .jnl { color:#f87171; } .jbr { color:#94a3b8; }
+        /* OCR result blocks — official PaddleOCR website style */
+        .ocr-block { position:relative; border-bottom:1px solid #f0f0f0; padding:10px 16px; cursor:pointer; transition:background .15s; }
+        .ocr-block:hover { background:#fafbff; }
+        .ocr-block.active { background:#eef2ff; border-left:3px solid #6366f1; }
+        .ocr-block .bact { display:none; position:absolute; right:8px; top:50%; transform:translateY(-50%); gap:4px; align-items:center; background:#fff; padding:2px 4px; border-radius:4px; box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+        .ocr-block:hover .bact, .ocr-block.active .bact { display:flex; }
+        .ocr-block .btxt { font-size:15px; line-height:1.8; color:#1f2937; outline:none; min-height:20px; white-space:pre-wrap; }
+        .ocr-block .btxt[contenteditable="true"] { background:#fffbeb; border:1px dashed #fbbf24; border-radius:4px; padding:4px 6px; }
+        .bbtn { font-size:11px; padding:2px 8px; border-radius:4px; border:1px solid #d1d5db; background:#fff; color:#6b7280; cursor:pointer; white-space:nowrap; }
+        .bbtn:hover { background:#f3f4f6; color:#374151; }
+        /* bbox overlay */
+        .pw { position:relative; text-align:center; }
+        .pw img, .pw canvas { max-height:calc(100vh - 200px); max-width:100%; vertical-align:top; }
+        #bboxSvg { position:absolute; pointer-events:none; }
+        /* Save bar */
+        .save-bar { background:linear-gradient(135deg,#4f46e5,#6366f1); color:#fff; padding:8px 16px; display:flex; align-items:center; justify-content:space-between; }
+        .save-bar button { background:#fff; color:#4f46e5; font-weight:600; padding:6px 24px; border-radius:6px; border:none; cursor:pointer; font-size:14px; }
+        .save-bar button:hover { background:#eef2ff; }
+        /* Parsed table */
+        .parsed-table { width:100%; border-collapse:collapse; margin:4px 0; font-size:14px; }
+        .parsed-table td, .parsed-table th { border:1px solid #e5e7eb; padding:8px 12px; text-align:left; line-height:1.6; }
+        .parsed-table th { background:#f9fafb; font-weight:600; color:#374151; }
+        .parsed-table tr:hover { background:#f9fafb; }
+        /* Region labels — small inline badges like official site */
+        .region-label { display:inline-block; font-size:10px; font-weight:700; padding:1px 6px; border-radius:3px; margin-right:6px; vertical-align:middle; letter-spacing:0.5px; background:#6366f1; color:#fff; }
+        /* Title blocks — large headings, no badge (like official site) */
+        .ocr-title { border-bottom:none; padding:14px 16px 2px; }
+        .ocr-title .btxt { font-size:24px; font-weight:700; line-height:1.4; display:block; color:#1f2937; }
+        .ocr-subtitle { border-bottom:none; padding:4px 16px 2px; }
+        .ocr-subtitle .btxt { font-size:18px; font-weight:700; line-height:1.4; display:block; color:#1f2937; }
+        /* Text block with bordered box (like official site input style) */
+        .text-box-wrap { border:1px solid #e5e7eb; border-radius:6px; padding:10px 14px; margin:4px 0; background:#fff; }
+        /* Table edit mode */
+        .table-edit-wrap { margin:8px 0; border:1px solid #e5e7eb; border-radius:6px; overflow:hidden; }
+        .table-edit-wrap textarea { width:100%; min-height:120px; font-family:'Consolas',monospace; font-size:12px; padding:10px; border:none; outline:none; resize:vertical; line-height:1.5; color:#374151; }
+        .table-edit-bar { display:flex; gap:8px; padding:8px 12px; border-top:1px solid #e5e7eb; justify-content:flex-end; background:#f9fafb; }
+        .table-save-btn { padding:4px 20px; border-radius:4px; font-size:13px; font-weight:600; cursor:pointer; border:none; background:#22c55e; color:#fff; }
+        .table-save-btn:hover { background:#16a34a; }
+        .table-reset-btn { padding:4px 20px; border-radius:4px; font-size:13px; cursor:pointer; border:1px solid #d1d5db; background:#fff; color:#6b7280; }
+        .table-reset-btn:hover { background:#f3f4f6; }
+        /* Page separator */
+        .page-sep { text-align:center; padding:8px 0; color:#9ca3af; font-size:12px; border-top:1px solid #f0f0f0; margin-top:4px; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-white shadow-sm border-b flex-shrink-0">
+        <div class="max-w-full mx-auto px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                    <i class="fas fa-eye text-white text-sm"></i>
+                </div>
+                <h1 class="text-lg font-bold text-gray-800">PaddleOCR 文档识别系统</h1>
+                <span class="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">v1.0</span>
+            </div>
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center bg-gray-100 rounded-lg p-0.5 text-xs">
+                    <button id="modeVl" onclick="setMode('vl')" class="px-3 py-1.5 rounded-md bg-indigo-600 text-white font-medium transition">
+                        <i class="fas fa-brain mr-1"></i>VL模型
+                    </button>
+                    <button id="modeLayout" onclick="setMode('layout')" class="px-3 py-1.5 rounded-md text-gray-600 hover:text-gray-800 transition">
+                        <i class="fas fa-table-cells mr-1"></i>版面解析
+                    </button>
+                    <button id="modeOcr" onclick="setMode('ocr')" class="px-3 py-1.5 rounded-md text-gray-600 hover:text-gray-800 transition">
+                        <i class="fas fa-font mr-1"></i>纯文字
+                    </button>
+                </div>
+                <a href="/docs" target="_blank" class="text-sm text-gray-500 hover:text-blue-600 flex items-center space-x-1">
+                    <i class="fas fa-book"></i><span>API 文档</span>
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content: 3-column layout -->
+    <main class="flex-1 flex overflow-hidden">
+        <!-- Left Sidebar: File List & Upload -->
+        <aside class="w-64 bg-white border-r flex flex-col flex-shrink-0">
+            <div class="p-3 border-b">
+                <button id="uploadBtn"
+                        class="w-full py-2 px-4 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 flex items-center justify-center space-x-2">
+                    <i class="fas fa-plus"></i><span>上传文档</span>
+                </button>
+                <input type="file" id="fileInput" class="hidden" accept=".jpg,.jpeg,.png,.bmp,.tiff,.tif,.pdf">
+            </div>
+            <!-- Upload Progress -->
+            <div id="uploadProgress" class="hidden p-3 border-b bg-blue-50">
+                <div class="flex items-center space-x-2 mb-2">
+                    <i class="fas fa-circle-notch spinner text-blue-500 text-sm"></i>
+                    <span id="uploadStatus" class="text-xs text-gray-600 truncate">识别中...</span>
+                </div>
+                <div class="bg-gray-200 rounded-full h-1.5">
+                    <div id="progressBar" class="bg-blue-500 h-1.5 rounded-full transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+            <!-- Drop Zone (hidden, activates on drag) -->
+            <div id="dropOverlay"
+                 class="hidden absolute inset-0 z-50 bg-blue-500/10 backdrop-blur-sm flex items-center justify-center">
+                <div class="bg-white rounded-2xl shadow-2xl p-10 text-center border-2 border-dashed border-blue-400">
+                    <i class="fas fa-cloud-upload-alt text-5xl text-blue-500 mb-4"></i>
+                    <p class="text-lg font-medium text-gray-700">释放文件以上传</p>
+                    <p class="text-sm text-gray-400 mt-1">支持 JPG、PNG、BMP、TIFF、PDF</p>
+                </div>
+            </div>
+            <!-- History List -->
+            <div class="flex-1 overflow-y-auto" id="historyList">
+                <div class="p-4 text-center text-gray-400 text-sm">暂无记录</div>
+            </div>
+            <div id="pagination" class="hidden border-t p-2 flex items-center justify-center space-x-1"></div>
+        </aside>
+
+        <!-- Center: Source File Preview -->
+        <div class="flex-1 flex flex-col border-r bg-gray-50 min-w-0">
+            <div class="flex items-center justify-between px-4 py-2 bg-white border-b flex-shrink-0">
+                <div class="flex items-center space-x-2">
+                    <span class="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded">源文件</span>
+                    <span id="previewFileName" class="text-sm text-gray-500 truncate"></span>
+                    <span id="previewFileSize" class="text-xs text-gray-400"></span>
+                </div>
+                <!-- PDF page nav -->
+                <div id="pdfNav" style="display:none" class="flex items-center space-x-2">
+                    <button onclick="prevPdfPage()" class="p-1 text-gray-500 hover:text-gray-700"><i class="fas fa-chevron-left"></i></button>
+                    <span class="text-sm text-gray-600"><span id="pdfPageNum">1</span> / <span id="pdfPageTotal">1</span></span>
+                    <button onclick="nextPdfPage()" class="p-1 text-gray-500 hover:text-gray-700"><i class="fas fa-chevron-right"></i></button>
+                    <button onclick="zoomIn()" class="p-1 text-gray-500 hover:text-gray-700" title="放大"><i class="fas fa-search-plus"></i></button>
+                    <button onclick="zoomOut()" class="p-1 text-gray-500 hover:text-gray-700" title="缩小"><i class="fas fa-search-minus"></i></button>
+                </div>
+            </div>
+            <div id="previewArea" class="flex-1 overflow-auto p-4 flex flex-col items-center justify-start">
+                <div id="previewPlaceholder" class="text-center text-gray-400">
+                    <i class="fas fa-file-image text-6xl mb-4 text-gray-300"></i>
+                    <p class="text-sm">上传或选择文件后预览</p>
+                </div>
+                <div id="previewWrapper" class="pw" style="display:none">
+                    <img id="previewImage" style="display:none" class="rounded shadow" alt="预览">
+                    <canvas id="pdfCanvas" style="display:none" class="rounded shadow"></canvas>
+                    <svg id="bboxSvg" style="display:none"></svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: OCR Result -->
+        <div class="w-[520px] flex flex-col bg-white flex-shrink-0">
+            <div class="flex items-center justify-between px-4 py-2 border-b flex-shrink-0 bg-gradient-to-r from-indigo-50 to-white">
+                <div class="flex space-x-1">
+                    <button id="tabText" onclick="switchTab('text')" class="text-sm px-3 py-1.5 rounded-md tab-active flex items-center space-x-1.5">
+                        <i class="fas fa-file-alt text-xs"></i><span>文档解析</span>
+                    </button>
+                    <button id="tabJson" onclick="switchTab('json')" class="text-sm px-3 py-1.5 rounded-md tab-inactive flex items-center space-x-1.5">
+                        <i class="fas fa-code text-xs"></i><span>JSON</span>
+                    </button>
+                </div>
+                <div class="flex items-center space-x-0.5">
+                    <button onclick="copyResult()" title="复制" class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition">
+                        <i class="fas fa-copy text-xs"></i>
+                    </button>
+                    <button onclick="exportResult('json')" title="下载 JSON" class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition">
+                        <i class="fas fa-download text-xs"></i>
+                    </button>
+                    <button onclick="exportResult('txt')" title="下载 TXT" class="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition">
+                        <i class="fas fa-file-export text-xs"></i>
+                    </button>
+                </div>
+            </div>
+            <!-- Text View: editable blocks -->
+            <div id="textView" class="flex-1 overflow-y-auto">
+                <div id="resultPlaceholder" class="h-full flex items-center justify-center text-gray-400 text-sm">
+                    <div class="text-center">
+                        <i class="fas fa-magic text-4xl mb-3 text-gray-300"></i>
+                        <p>识别结果将在此显示</p>
+                    </div>
+                </div>
+                <div id="resultContent" class="hidden p-4"></div>
+            </div>
+            <!-- JSON View -->
+            <div id="jsonView" class="flex-1 overflow-auto hidden">
+                <div id="jsonContent" class="json-viewer"></div>
+            </div>
+            <!-- Save bar -->
+            <div id="saveBar" class="hidden save-bar flex-shrink-0">
+                <span id="saveHint" class="text-sm"><i class="fas fa-info-circle mr-1"></i>识别完成，请检查并编辑后保存</span>
+                <button onclick="saveToDb()"><i class="fas fa-save mr-1"></i>保存</button>
+            </div>
+            <!-- Footer -->
+            <div id="resultFooter" class="hidden border-t px-4 py-1.5 bg-gray-50 flex items-center justify-between text-xs text-gray-400">
+                <span id="resultInfoText"></span>
+                <span id="resultStatus" class="px-2 py-0.5 rounded-full text-xs font-medium"></span>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '/static/js/pdf.worker.min.js';
+
+        let currentTaskId = null, currentPage = 1, currentResultData = null;
+        let pdfDoc = null, pdfPageIdx = 1, pdfScale = 1.5, currentFileUrl = null;
+        let imageNatW = 0, imageNatH = 0;
+        let ocrMode = 'vl'; // 'vl' = PaddleOCR-VL-1.5, 'layout' = PP-StructureV3, 'ocr' = PP-OCRv5
+        let _originalTableHtml = {}; // for table edit reset
+
+        function setMode(m) {
+            ocrMode = m;
+            const mV = document.getElementById('modeVl'), mL = document.getElementById('modeLayout'), mO = document.getElementById('modeOcr');
+            const on = 'px-3 py-1.5 rounded-md bg-indigo-600 text-white font-medium transition';
+            const off = 'px-3 py-1.5 rounded-md text-gray-600 hover:text-gray-800 transition';
+            mV.className = off; mL.className = off; mO.className = off;
+            if (m === 'vl') {
+                mV.className = on;
+            } else if (m === 'layout') {
+                mL.className = on;
+            } else {
+                mO.className = on;
+            }
+        }
+
+        // ===== Upload =====
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileInput = document.getElementById('fileInput');
+        const dropOverlay = document.getElementById('dropOverlay');
+        uploadBtn.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => { if (fileInput.files.length > 0) uploadAndOcr(fileInput.files[0]); });
+        let dragCounter = 0;
+        document.addEventListener('dragenter', e => { e.preventDefault(); dragCounter++; dropOverlay.classList.remove('hidden'); });
+        document.addEventListener('dragleave', e => { e.preventDefault(); if (--dragCounter <= 0) { dragCounter = 0; dropOverlay.classList.add('hidden'); } });
+        document.addEventListener('dragover', e => e.preventDefault());
+        document.addEventListener('drop', e => {
+            e.preventDefault(); dragCounter = 0; dropOverlay.classList.add('hidden');
+            if (e.dataTransfer.files.length > 0) uploadAndOcr(e.dataTransfer.files[0]);
+        });
+
+        // ===== Preview =====
+        function showPreview(url, filename) {
+            const img = document.getElementById('previewImage'), canvas = document.getElementById('pdfCanvas');
+            const ph = document.getElementById('previewPlaceholder'), wrap = document.getElementById('previewWrapper');
+            const nav = document.getElementById('pdfNav'), svg = document.getElementById('bboxSvg');
+            // Hide everything first (use style.display to avoid CSS specificity issues)
+            img.style.display = 'none';
+            canvas.style.display = 'none';
+            ph.style.display = 'none';
+            nav.style.display = 'none';
+            wrap.style.display = 'block';
+            svg.style.display = 'none';
+            svg.innerHTML = '';
+            pdfDoc = null;
+            document.getElementById('previewFileName').textContent = filename;
+            document.getElementById('previewFileSize').textContent = '';
+            const ext = filename.split('.').pop().toLowerCase();
+            if (['jpg','jpeg','png','bmp','tiff','tif'].includes(ext)) {
+                img.onload = () => {
+                    imageNatW = img.naturalWidth; imageNatH = img.naturalHeight;
+                    requestAnimationFrame(() => syncSvgToElement(img));
+                };
+                img.src = url;
+                img.style.display = 'inline-block';
+            } else if (ext === 'pdf') { loadPdf(url); }
+        }
+
+        // Overlay SVG exactly on the visible img/canvas element
+        function syncSvgToElement(el) {
+            const svg = document.getElementById('bboxSvg');
+            const w = el.clientWidth || el.width, h = el.clientHeight || el.height;
+            if (!w || !h) { setTimeout(() => syncSvgToElement(el), 100); return; }
+            svg.style.display = 'block';
+            svg.style.width = w + 'px';
+            svg.style.height = h + 'px';
+            svg.style.left = el.offsetLeft + 'px';
+            svg.style.top = el.offsetTop + 'px';
+            svg.setAttribute('viewBox', `0 0 ${imageNatW} ${imageNatH}`);
+            svg.innerHTML = '';
+        }
+
+        // Draw all region bboxes with type labels on the SVG overlay (like official site)
+        function drawAllBboxes() {
+            const svg = document.getElementById('bboxSvg');
+            if (!svg || !currentResultData?.result_json) return;
+            const pageNum = pdfDoc ? pdfPageIdx : 1;
+            const page = currentResultData.result_json[pageNum - 1];
+            if (!page?.regions) return;
+            page.regions.forEach((reg, i) => {
+                if (SEAL_TYPES.has(reg.type) || !reg.bbox || reg.bbox.length < 4) return;
+                const [x1, y1, x2, y2] = reg.bbox;
+                const labelText = TYPE_LABEL[(reg.type||'').trim()] || reg.type;
+                // Region border
+                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                rect.setAttribute('x', x1); rect.setAttribute('y', y1);
+                rect.setAttribute('width', x2-x1); rect.setAttribute('height', y2-y1);
+                rect.setAttribute('fill', 'transparent');
+                rect.setAttribute('stroke', '#4f46e5'); rect.setAttribute('stroke-width', '2');
+                rect.setAttribute('class', 'bbox-region');
+                svg.appendChild(rect);
+                // Label badge background
+                const fs = Math.max(14, Math.min(18, (x2-x1)*0.04));
+                const lw = labelText.length * fs * 0.9 + 14, lh = fs + 10;
+                const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                bg.setAttribute('x', x1); bg.setAttribute('y', y1);
+                bg.setAttribute('width', lw); bg.setAttribute('height', lh);
+                bg.setAttribute('fill', '#4f46e5'); bg.setAttribute('rx', '3');
+                svg.appendChild(bg);
+                // Label text
+                const txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                txt.setAttribute('x', x1+7); txt.setAttribute('y', y1+fs+2);
+                txt.setAttribute('fill', '#fff'); txt.setAttribute('font-size', fs);
+                txt.setAttribute('font-weight', '700'); txt.setAttribute('font-family', 'system-ui,sans-serif');
+                txt.textContent = labelText;
+                svg.appendChild(txt);
+            });
+        }
+
+        async function loadPdf(url) {
+            try {
+                pdfDoc = await pdfjsLib.getDocument(url).promise;
+                document.getElementById('pdfPageTotal').textContent = pdfDoc.numPages;
+                pdfPageIdx = 1;
+                document.getElementById('pdfNav').style.display = 'flex';
+                document.getElementById('pdfCanvas').style.display = 'inline-block';
+                renderPdfPage(pdfPageIdx);
+            } catch (e) { console.error('PDF load fail:', e); }
+        }
+        async function renderPdfPage(num) {
+            if (!pdfDoc) return;
+            const page = await pdfDoc.getPage(num);
+            // OCR uses 2x scale in pdf_to_images
+            const vpOcr = page.getViewport({ scale: 2 });
+            const vp = page.getViewport({ scale: pdfScale });
+            const c = document.getElementById('pdfCanvas'), ctx = c.getContext('2d');
+            c.width = vp.width; c.height = vp.height;
+            await page.render({ canvasContext: ctx, viewport: vp }).promise;
+            document.getElementById('pdfPageNum').textContent = num;
+            imageNatW = vpOcr.width; imageNatH = vpOcr.height;
+            requestAnimationFrame(() => syncSvgToElement(c));
+        }
+        function prevPdfPage() { if (pdfPageIdx > 1) renderPdfPage(--pdfPageIdx); }
+        function nextPdfPage() { if (pdfDoc && pdfPageIdx < pdfDoc.numPages) renderPdfPage(++pdfPageIdx); }
+        function zoomIn() { pdfScale = Math.min(pdfScale + 0.25, 4); renderPdfPage(pdfPageIdx); }
+        function zoomOut() { pdfScale = Math.max(pdfScale - 0.25, 0.5); renderPdfPage(pdfPageIdx); }
+        function formatSize(b) { return b < 1024 ? b+'B' : b < 1048576 ? (b/1024).toFixed(1)+'KB' : (b/1048576).toFixed(1)+'MB'; }
+
+        // ===== Upload & OCR =====
+        async function uploadAndOcr(file) {
+            const progress = document.getElementById('uploadProgress'), status = document.getElementById('uploadStatus'), bar = document.getElementById('progressBar');
+            progress.classList.remove('hidden'); status.textContent = `识别 "${file.name}"...`; bar.style.width = '30%';
+            const fd = new FormData(); fd.append('file', file);
+            try {
+                bar.style.width = '60%';
+                const res = await fetch(`/api/ocr/upload?mode=${ocrMode}`, { method: 'POST', body: fd });
+                bar.style.width = '90%';
+                if (!res.ok) { const e = await res.json(); throw new Error(e.detail || '识别失败'); }
+                const data = await res.json();
+                bar.style.width = '100%'; status.textContent = '识别完成！';
+                setTimeout(() => {
+                    progress.classList.add('hidden'); bar.style.width = '0%';
+                    showResult(data);
+                    showPreview(`/api/ocr/tasks/${data.id}/file`, data.filename);
+                    loadHistory();
+                }, 500);
+            } catch (err) {
+                status.textContent = `错误: ${err.message}`;
+                bar.classList.replace('bg-blue-500', 'bg-red-500');
+                setTimeout(() => { progress.classList.add('hidden'); bar.classList.replace('bg-red-500', 'bg-blue-500'); bar.style.width = '0%'; }, 3000);
+            }
+        }
+
+        // ===== Show Result =====
+        function showResult(data) {
+            currentTaskId = data.id; currentResultData = data;
+            // Footer
+            document.getElementById('resultFooter').classList.remove('hidden');
+            document.getElementById('resultInfoText').textContent = `${data.filename}  ·  ${data.page_count} 页`;
+            const sm = { done:['已保存','bg-green-100 text-green-700'], failed:['失败','bg-red-100 text-red-700'] };
+            const [st,sc] = sm[data.status] || ['未知','bg-gray-100 text-gray-700'];
+            const badge = document.getElementById('resultStatus');
+            badge.textContent = st; badge.className = `px-2 py-0.5 rounded-full text-xs font-medium ${sc}`;
+            // Save bar hidden for DB tasks
+            document.getElementById('saveBar').classList.add('hidden');
+            // Editable blocks
+            document.getElementById('resultPlaceholder').classList.add('hidden');
+            const rc = document.getElementById('resultContent'); rc.classList.remove('hidden');
+            rc.innerHTML = buildBlocks(data);
+            // JSON view
+            document.getElementById('jsonContent').innerHTML = renderJson(data.result_json || []);
+            // Sidebar highlight
+            document.querySelectorAll('.history-item').forEach(el => el.classList.remove('history-item-active'));
+            const a = document.querySelector(`.history-item[data-id="${data.id}"]`); if (a) a.classList.add('history-item-active');
+        }
+
+        // ===== Build Result Blocks (official PaddleOCR website style) =====
+        const TYPE_LABEL = {title:'标题',table:'表格',text:'文本',paragraph:'文本',
+            other_text:'文本',figure:'图片',image:'图片',seal:'印章',formula:'公式',
+            equation:'公式',header:'页眉',footer:'页脚',reference:'参考',caption:'标注',
+            abstract:'摘要',toc:'目录',note:'备注',footnote:'脚注',sidebar:'侧栏',
+            doc_title:'段落标题',paragraph_title:'段落标题',content_title:'段落标题',
+            abstract_title:'段落标题',reference_title:'段落标题',
+            table_title:'表格标题',figure_title:'图片标题',chart_title:'图表标题',
+            chart:'图表',display_formula:'公式',inline_formula:'公式',
+            vertical_text:'文本',ocr:'文本',content:'文本',
+            reference_content:'参考',algorithm:'算法',vision_footnote:'脚注',
+            number:'编号',aside_text:'旁注',header_image:'页眉图',footer_image:'页脚图',
+            formula_number:'公式编号',spotting:'检测'};
+        const IMG_TYPES = new Set(['figure','image']);
+        const SEAL_TYPES = new Set(['seal']);
+
+        function buildBlocks(data) {
+            const rj = data.result_json;
+            if (!rj || !Array.isArray(rj) || rj.length === 0)
+                return `<div style="padding:24px;color:#6b7280;text-align:center">${esc(data.full_text || '（无内容）')}</div>`;
+            let h = '';
+            _originalTableHtml = {};
+            rj.forEach((page, pi) => {
+                const regions = page.regions || [];
+                const lines = page.lines || [];
+                const hasStructure = regions.some(r => !IMG_TYPES.has(r.type) && !SEAL_TYPES.has(r.type));
+
+                const TITLE_TYPES = new Set(['doc_title','paragraph_title','content_title','abstract_title','reference_title','title']);
+                if (hasStructure) {
+                    let titleCount = 0;
+                    regions.forEach((reg, ri) => {
+                        const rtype = (reg.type || '').trim();
+                        const btype = reg.bbox_type || (Array.isArray(reg.bbox?.[0]) ? 'poly' : 'rect');
+                        const bb = reg.bbox ? `data-bbox='${JSON.stringify(reg.bbox)}' data-btype="${btype}" data-page="${page.page_num||pi+1}"` : '';
+                        const labelName = TYPE_LABEL[rtype] || rtype;
+                        const content = (reg.content || '').trim();
+
+                        // Skip seal regions (garbage OCR on stamps/emblems)
+                        if (SEAL_TYPES.has(rtype)) return;
+                        // Skip pure image with no content
+                        if (IMG_TYPES.has(rtype) && !content) return;
+
+                        // Table with HTML → rendered table + edit capability
+                        if (rtype === 'table' && reg.html) {
+                            titleCount = 99;
+                            h += `<div class="ocr-block" data-p="${pi}" data-r="${ri}" ${bb} onclick="selBlock(this)">
+                                <span class="region-label">${labelName}</span>
+                                <div class="parsed-table-wrap" id="tableWrap_${pi}_${ri}" style="overflow-x:auto">${sanitizeTableHtml(reg.html)}</div>
+                                <div class="bact">
+                                    <button class="bbtn" onclick="event.stopPropagation();cpRegion(${pi},${ri})"><i class="fas fa-copy"></i> 复制</button>
+                                    <button class="bbtn" onclick="event.stopPropagation();editTable(${pi},${ri})"><i class="fas fa-pen"></i> 纠正</button>
+                                </div>
+                            </div>`;
+                            return;
+                        }
+
+                        // Explicit title types from VL model → render as heading
+                        if (TITLE_TYPES.has(rtype) && content) {
+                            const cls = rtype === 'doc_title' ? 'ocr-title' : 'ocr-subtitle';
+                            h += `<div class="${cls} ocr-block" data-p="${pi}" data-r="${ri}" ${bb} onclick="selBlock(this)" ondblclick="editRegion(this)">
+                                <span class="region-label">${labelName}</span>
+                                <span class="btxt">${esc(content)}</span>
+                            </div>`;
+                            return;
+                        }
+
+                        // First 1-2 short text blocks → title/subtitle heading (no badge, like official site)
+                        if (titleCount < 2 && content.length <= 30 && content) {
+                            titleCount++;
+                            const cls = titleCount === 1 ? 'ocr-title' : 'ocr-subtitle';
+                            h += `<div class="${cls} ocr-block" data-p="${pi}" data-r="${ri}" ${bb} onclick="selBlock(this)" ondblclick="editRegion(this)">
+                                <span class="btxt">${esc(content)}</span>
+                            </div>`;
+                            return;
+                        }
+                        titleCount = 99;
+
+                        // Regular text block → badge + optional bordered box
+                        const isLong = content.length > 15;
+                        h += `<div class="ocr-block" data-p="${pi}" data-r="${ri}" ${bb} onclick="selBlock(this)" ondblclick="editRegion(this)">
+                            <span class="region-label">${labelName}</span>
+                            ${isLong ? '<div class="text-box-wrap">' : ''}
+                            <span class="btxt">${esc(content)}</span>
+                            ${isLong ? '</div>' : ''}
+                            <div class="bact">
+                                <button class="bbtn" onclick="event.stopPropagation();cpRegion(${pi},${ri})"><i class="fas fa-copy"></i> 复制</button>
+                                <button class="bbtn" onclick="event.stopPropagation();editRegion(this.closest('.ocr-block'))"><i class="fas fa-pen"></i> 纠正</button>
+                            </div>
+                        </div>`;
+                    });
+                } else if (lines.length > 0) {
+                    lines.forEach((line, li) => {
+                        const bb = line.bbox ? `data-bbox='${JSON.stringify(line.bbox)}' data-page="${page.page_num||pi+1}"` : '';
+                        h += `<div class="ocr-block" data-p="${pi}" data-l="${li}" ${bb} onclick="selBlock(this)" ondblclick="editBlock(this)">
+                            <span class="btxt">${esc(line.text)}</span>
+                            <div class="bact">
+                                <button class="bbtn" onclick="event.stopPropagation();cpBlock(${pi},${li})"><i class="fas fa-copy"></i> 复制</button>
+                                <button class="bbtn" onclick="event.stopPropagation();editBlock(this.closest('.ocr-block'))"><i class="fas fa-pen"></i> 纠正</button>
+                            </div></div>`;
+                    });
+                } else if (regions.length > 0) {
+                    regions.forEach((reg, ri) => {
+                        if (!(reg.content || '').trim() || SEAL_TYPES.has(reg.type)) return;
+                        const btype = reg.bbox_type || (Array.isArray(reg.bbox?.[0]) ? 'poly' : 'rect');
+                        const bb = reg.bbox ? `data-bbox='${JSON.stringify(reg.bbox)}' data-btype="${btype}" data-page="${page.page_num||pi+1}"` : '';
+                        h += `<div class="ocr-block" data-p="${pi}" data-r="${ri}" ${bb} onclick="selBlock(this)" ondblclick="editRegion(this)">
+                            <span class="btxt">${esc(reg.content)}</span>
+                            <div class="bact">
+                                <button class="bbtn" onclick="event.stopPropagation();cpRegion(${pi},${ri})"><i class="fas fa-copy"></i> 复制</button>
+                                <button class="bbtn" onclick="event.stopPropagation();editRegion(this.closest('.ocr-block'))"><i class="fas fa-pen"></i> 纠正</button>
+                            </div>
+                        </div>`;
+                    });
+                }
+                h += `<div class="page-sep">第${page.page_num||pi+1}页</div>`;
+            });
+            return h;
+        }
+
+        function sanitizeTableHtml(html) {
+            // Strip <html><body>...</body></html> wrapper from PaddleX output
+            html = html.replace(/<\/?html[^>]*>/gi, '').replace(/<\/?body[^>]*>/gi, '').trim();
+            return html.replace(/<table/gi, '<table class="parsed-table"');
+        }
+
+        function selBlock(el) {
+            document.querySelectorAll('.ocr-block.active').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            // For PDF: navigate to the correct page first
+            const blockPage = parseInt(el.getAttribute('data-page'));
+            if (pdfDoc && blockPage && blockPage !== pdfPageIdx) {
+                pdfPageIdx = blockPage;
+                renderPdfPage(pdfPageIdx).then(() => {
+                    const bb = el.getAttribute('data-bbox');
+                    const btype = el.getAttribute('data-btype');
+                    if (bb) try { hlBbox(JSON.parse(bb), btype); } catch(e) {}
+                });
+                return;
+            }
+            const bb = el.getAttribute('data-bbox');
+            const btype = el.getAttribute('data-btype');
+            if (bb) try { hlBbox(JSON.parse(bb), btype); } catch(e) {}
+        }
+
+        // 编辑旧格式 lines 区块
+        function editBlock(el) {
+            const t = el.querySelector('.btxt');
+            if (!t || t.contentEditable === 'true') return;
+            t.contentEditable = 'true'; t.focus();
+            const r = document.createRange(); r.selectNodeContents(t);
+            const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+            t.addEventListener('blur', function h() {
+                t.contentEditable = 'false';
+                const pi = +el.dataset.p, li = +el.dataset.l;
+                if (currentResultData?.result_json?.[pi]?.lines?.[li]) {
+                    currentResultData.result_json[pi].lines[li].text = t.textContent;
+                    rebuildFullText();
+                }
+                t.removeEventListener('blur', h);
+            }, { once: true });
+        }
+
+        // 编辑新格式 regions 区块
+        function editRegion(el) {
+            const t = el.querySelector('.btxt');
+            if (!t || t.contentEditable === 'true') return;
+            t.contentEditable = 'true'; t.focus();
+            const r = document.createRange(); r.selectNodeContents(t);
+            const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+            t.addEventListener('blur', function h() {
+                t.contentEditable = 'false';
+                const pi = +el.dataset.p, ri = +el.dataset.r;
+                if (currentResultData?.result_json?.[pi]?.regions?.[ri]) {
+                    currentResultData.result_json[pi].regions[ri].content = t.textContent;
+                    rebuildFullText();
+                }
+                t.removeEventListener('blur', h);
+            }, { once: true });
+        }
+
+        // ===== Table HTML Editing (like official site) =====
+        function editTable(pi, ri) {
+            const reg = currentResultData?.result_json?.[pi]?.regions?.[ri];
+            if (!reg || !reg.html) return;
+            const wrap = document.getElementById(`tableWrap_${pi}_${ri}`);
+            if (!wrap) return;
+            _originalTableHtml[`${pi}_${ri}`] = reg.html;
+            wrap.innerHTML = `<div class="table-edit-wrap">
+                <textarea id="tableEdit_${pi}_${ri}">${esc(reg.html)}</textarea>
+                <div class="table-edit-bar">
+                    <button class="table-save-btn" onclick="event.stopPropagation();saveTableEdit(${pi},${ri})">保存</button>
+                    <button class="table-reset-btn" onclick="event.stopPropagation();resetTableEdit(${pi},${ri})">重置</button>
+                </div>
+            </div>`;
+        }
+        function saveTableEdit(pi, ri) {
+            const ta = document.getElementById(`tableEdit_${pi}_${ri}`);
+            if (!ta) return;
+            const newHtml = ta.value;
+            if (currentResultData?.result_json?.[pi]?.regions?.[ri]) {
+                currentResultData.result_json[pi].regions[ri].html = newHtml;
+                currentResultData.result_json[pi].regions[ri].content = newHtml;
+                rebuildFullText();
+            }
+            const wrap = document.getElementById(`tableWrap_${pi}_${ri}`);
+            if (wrap) wrap.innerHTML = sanitizeTableHtml(newHtml);
+        }
+        function resetTableEdit(pi, ri) {
+            const key = `${pi}_${ri}`;
+            const original = _originalTableHtml[key];
+            if (!original) return;
+            if (currentResultData?.result_json?.[pi]?.regions?.[ri]) {
+                currentResultData.result_json[pi].regions[ri].html = original;
+                currentResultData.result_json[pi].regions[ri].content = original;
+            }
+            const wrap = document.getElementById(`tableWrap_${pi}_${ri}`);
+            if (wrap) wrap.innerHTML = sanitizeTableHtml(original);
+            delete _originalTableHtml[key];
+        }
+
+        function rebuildFullText() {
+            if (!currentResultData?.result_json) return;
+            const parts = currentResultData.result_json.map(page => {
+                const regions = page.regions;
+                if (regions && regions.length > 0) {
+                    return regions.map(r => r.type === 'table' ? '[表格]' : (r.content||'')).join('\n');
+                }
+                return (page.lines||[]).map(l => l.text).join('\n');
+            });
+            currentResultData.full_text = parts.join('\n');
+            document.getElementById('jsonContent').innerHTML = renderJson(currentResultData.result_json);
+            document.getElementById('saveBar').classList.remove('hidden');
+            document.getElementById('saveHint').innerHTML = '<i class="fas fa-edit mr-1"></i>内容已修改，点击保存更新';
+        }
+
+        function cpBlock(pi, li) {
+            if (!currentResultData?.result_json?.[pi]?.lines?.[li]) return;
+            navigator.clipboard.writeText(currentResultData.result_json[pi].lines[li].text).then(() => showToast('已复制'));
+        }
+
+        function cpRegion(pi, ri) {
+            if (!currentResultData?.result_json?.[pi]?.regions?.[ri]) return;
+            navigator.clipboard.writeText(currentResultData.result_json[pi].regions[ri].content).then(() => showToast('已复制'));
+        }
+
+        // ===== Bbox Overlay =====
+        function bboxToPoints(bbox, btype) {
+            if (!bbox) return [];
+            if (btype === 'rect' && bbox.length === 4) {
+                const [x1,y1,x2,y2] = bbox;
+                return [[x1,y1],[x2,y1],[x2,y2],[x1,y2]];
+            }
+            if (Array.isArray(bbox[0])) {
+                return bbox.map(p => [Number(p[0]), Number(p[1])]);
+            }
+            if (bbox.length === 8) {
+                return [[bbox[0],bbox[1]],[bbox[2],bbox[3]],[bbox[4],bbox[5]],[bbox[6],bbox[7]]];
+            }
+            return [];
+        }
+
+        function tightenPoints(points) {
+            if (!points || points.length < 4) return points;
+            const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+            const minX = Math.min(...xs), maxX = Math.max(...xs);
+            const minY = Math.min(...ys), maxY = Math.max(...ys);
+            const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+            const dx = Math.min(10, Math.max(2, (maxX - minX) * 0.025));
+            const dy = Math.min(6, Math.max(2, (maxY - minY) * 0.12));
+            return points.map(([x, y]) => [
+                x < cx ? x + dx : x - dx,
+                y < cy ? y + dy : y - dy,
+            ]);
+        }
+
+        function hlBbox(bbox, btype) {
+            // Remove previous highlight but keep region labels
+            document.querySelectorAll('#bboxSvg .bbox-highlight').forEach(el => el.remove());
+            const svg = document.getElementById('bboxSvg');
+            if (!bbox) return;
+            const points = tightenPoints(bboxToPoints(bbox, btype));
+            const pts = points.map(p => p.join(',')).join(' ');
+            if (pts) {
+                const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                poly.setAttribute('points', pts);
+                poly.setAttribute('fill', 'rgba(79,70,229,0.2)');
+                poly.setAttribute('stroke', '#4f46e5');
+                poly.setAttribute('stroke-width', '3');
+                poly.setAttribute('class', 'bbox-highlight');
+                svg.appendChild(poly);
+            }
+        }
+
+        // ===== Save (for edited tasks) =====
+        async function saveToDb() {
+            const btn = document.querySelector('#saveBar button');
+            btn.disabled = true; btn.textContent = '保存中...';
+            try {
+                // Currently we only support editing already-saved tasks (upload auto-saves)
+                if (!currentTaskId || !currentResultData) throw new Error('无任务可保存');
+                const res = await fetch(`/api/ocr/tasks/${currentTaskId}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ result_json: currentResultData.result_json, full_text: currentResultData.full_text })
+                });
+                if (res.ok) {
+                    document.getElementById('saveBar').classList.add('hidden');
+                    document.getElementById('resultStatus').textContent = '已保存';
+                    document.getElementById('resultStatus').className = 'px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700';
+                    showToast('保存成功！');
+                } else { const e = await res.json(); throw new Error(e.detail || '保存失败'); }
+            } catch (e) { showToast(`保存失败: ${e.message}`); }
+            finally { btn.disabled = false; btn.innerHTML = '<i class="fas fa-save mr-1"></i>保存'; }
+        }
+
+        // ===== JSON Viewer =====
+        function renderJson(obj) {
+            const raw = JSON.stringify(obj, null, 2).split('\n');
+            return raw.map((l, i) => `<div class="jl"><span class="ln">${i+1}</span><span class="lc">${hlJson(l)}</span></div>`).join('');
+        }
+        function hlJson(l) {
+            let s = l.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            s = s.replace(/"([^"\\]*(\\.[^"\\]*)*)"(\s*:)/g, '<span class="jk">"$1"</span>$3');
+            s = s.replace(/"([^"\\]*(\\.[^"\\]*)*)"/g, '<span class="js">"$1"</span>');
+            s = s.replace(/\b(-?\d+\.?\d*([eE][+-]?\d+)?)\b/g, '<span class="jn">$1</span>');
+            s = s.replace(/\b(true|false)\b/g, '<span class="jb">$1</span>');
+            s = s.replace(/\bnull\b/g, '<span class="jnl">null</span>');
+            s = s.replace(/([[\]{}])/g, '<span class="jbr">$1</span>');
+            return s;
+        }
+        function esc(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+        // alias for templates
+        const escapeHtml = esc;
+
+        // ===== Tabs =====
+        function switchTab(tab) {
+            const tT = document.getElementById('tabText'), tJ = document.getElementById('tabJson');
+            const vT = document.getElementById('textView'), vJ = document.getElementById('jsonView');
+            const ac = 'text-sm px-3 py-1.5 rounded-md tab-active flex items-center space-x-1.5';
+            const ic = 'text-sm px-3 py-1.5 rounded-md tab-inactive flex items-center space-x-1.5';
+            if (tab === 'text') { tT.className = ac; tJ.className = ic; vT.classList.remove('hidden'); vJ.classList.add('hidden'); }
+            else { tT.className = ic; tJ.className = ac; vT.classList.add('hidden'); vJ.classList.remove('hidden'); }
+        }
+
+        // ===== Export & Copy =====
+        function exportResult(fmt) { if (currentTaskId) window.open(`/api/ocr/tasks/${currentTaskId}/export?fmt=${fmt}`, '_blank'); }
+        function copyResult() {
+            const t = currentResultData ? (currentResultData.full_text || '') : '';
+            if (t) navigator.clipboard.writeText(t).then(() => showToast('已复制到剪贴板'));
+        }
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'fixed bottom-6 right-6 bg-gray-800 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50 fade-in';
+            t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2000);
+        }
+
+        // ===== History =====
+        async function loadHistory(page = 1) {
+            currentPage = page;
+            try {
+                const res = await fetch(`/api/ocr/tasks?page=${page}&page_size=20`);
+                const data = await res.json();
+                const list = document.getElementById('historyList');
+                if (data.tasks.length === 0) { list.innerHTML = '<div class="p-4 text-center text-gray-400 text-sm">暂无记录</div>'; return; }
+                list.innerHTML = data.tasks.map(t => {
+                    const fi = t.file_type === '.pdf' ? 'fa-file-pdf text-red-400' : 'fa-file-image text-blue-400';
+                    const dt = new Date(t.created_at).toLocaleString('zh-CN');
+                    const ac = currentTaskId === t.id ? 'history-item-active' : '';
+                    return `<div class="history-item ${ac} flex items-center justify-between px-3 py-2.5 hover:bg-gray-50 cursor-pointer border-b border-gray-100 group"
+                         data-id="${t.id}" onclick="viewTask(${t.id})">
+                        <div class="flex items-center space-x-2.5 min-w-0">
+                            <i class="fas ${fi} text-lg flex-shrink-0"></i>
+                            <div class="min-w-0">
+                                <p class="text-sm text-gray-700 truncate font-medium">${esc(t.filename)}</p>
+                                <p class="text-xs text-gray-400">${dt} · ${t.page_count}页</p>
+                            </div>
+                        </div>
+                        <button onclick="event.stopPropagation();deleteTask(${t.id})" class="text-gray-300 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100"><i class="fas fa-trash"></i></button>
+                    </div>`;
+                }).join('');
+                const tp = Math.ceil(data.total / 20), pg = document.getElementById('pagination');
+                if (tp > 1) { pg.classList.remove('hidden'); pg.innerHTML = Array.from({length:tp},(_,i)=>i+1).map(p=>`<button onclick="loadHistory(${p})" class="px-2 py-0.5 text-xs rounded ${p===page?'bg-indigo-500 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'}">${p}</button>`).join(''); }
+                else pg.classList.add('hidden');
+            } catch (e) { console.error('loadHistory fail:', e); }
+        }
+
+        async function viewTask(id) {
+            try {
+                const res = await fetch(`/api/ocr/tasks/${id}`), data = await res.json();
+                showResult(data);
+                showPreview(`/api/ocr/tasks/${id}/file`, data.filename);
+            } catch (e) { console.error('viewTask fail:', e); }
+        }
+
+        async function deleteTask(id) {
+            if (!confirm('确定要删除此记录吗？')) return;
+            try {
+                await fetch(`/api/ocr/tasks/${id}`, { method: 'DELETE' });
+                loadHistory(currentPage);
+                if (currentTaskId === id) {
+                    currentTaskId = null; currentResultData = null;
+                    document.getElementById('resultFooter').classList.add('hidden');
+                    document.getElementById('saveBar').classList.add('hidden');
+                    document.getElementById('resultContent').classList.add('hidden');
+                    document.getElementById('resultContent').innerHTML = '';
+                    document.getElementById('resultPlaceholder').classList.remove('hidden');
+                    document.getElementById('jsonContent').innerHTML = '';
+                    document.getElementById('previewWrapper').style.display = 'none';
+                    document.getElementById('previewPlaceholder').style.display = '';
+                    document.getElementById('previewFileName').textContent = '';
+                }
+            } catch (e) { console.error('deleteTask fail:', e); }
+        }
+
+        loadHistory();
+    </script>
+</body>
+</html>
