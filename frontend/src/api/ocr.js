@@ -2,10 +2,18 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api/ocr' })
 
-export const uploadFile = (file, mode) => {
+export const uploadFile = (file, mode, options = {}) => {
   const form = new FormData()
   form.append('file', file)
-  return api.post(`/upload?mode=${mode}`, form)
+  if (options.relativePath) form.append('relative_path', options.relativePath)
+  return api.post('/upload', form, {
+    params: {
+      mode,
+      ...(options.excelPath ? { excel_path: options.excelPath } : {}),
+      ...(options.excelInit ? { excel_init: 1 } : {}),
+      ...(options.outputDir ? { output_dir: options.outputDir } : {}),
+    },
+  })
 }
 
 export const batchUpload = (files, mode, scheduledAt = null) => {

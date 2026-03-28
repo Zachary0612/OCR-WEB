@@ -16,6 +16,31 @@ HEADERS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密�
 DEFAULT_EXCEL_NAME = '归档文件目录.xlsx'
 
 
+def _extract_archive_number(filename: str) -> str:
+    stem = Path(filename).stem.strip()
+    if not stem:
+        return ""
+
+    ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+(?:-\d+)+)$', stem, re.IGNORECASE)
+    if ws_match:
+        return ws_match.group(1)
+
+    kj_match = re.match(r'^(KJ(?:-[A-Za-z0-9]+){4,})$', stem, re.IGNORECASE)
+    if kj_match:
+        return kj_match.group(1)
+
+    legacy_ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)$', stem, re.IGNORECASE)
+    if legacy_ws_match:
+        return legacy_ws_match.group(1)
+
+    if re.match(r'^(KJ[-].*)$', stem, re.IGNORECASE):
+        parts = stem.split('-')
+        if len(parts) >= 5:
+            return '-'.join(parts[:5])
+
+    return ""
+
+
 def extract_fields(filename: str, full_text: str, result_json, page_count: int) -> dict:
     """从 OCR 结果中提取关键字段"""
     fields = {h: "" for h in HEADERS}
@@ -28,14 +53,7 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int) 
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
 
     # --- 档号：从文件名提取 ---
-    fname_stem = Path(filename).stem
-    dh_match = re.match(r'(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)', fname_stem)
-    if dh_match:
-        fields["档号"] = dh_match.group(1)
-    elif re.match(r'(KJ[-].*)', fname_stem):
-        parts = fname_stem.split('-')
-        if len(parts) >= 5:
-            fields["档号"] = '-'.join(parts[:5])
+    fields["档号"] = _extract_archive_number(filename)
 
     # --- 文号 ---
     wh_patterns = [

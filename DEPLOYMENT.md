@@ -17,9 +17,9 @@
 | **历史按文件夹分组** | 首页历史按源目录聚合显示，点击后进入同目录结果页 |
 | **文件夹级历史删除** | 历史目录支持按文件夹批量删除识别记录 |
 | **目录侧边栏切换** | 结果页左侧显示当前文件夹全部文件，可快速切换查看 |
-| **本地路径批量识别** | 输入服务器路径递归扫描文件夹，支持批量识别 |
+| **批量文件夹识别** | 支持资源管理器直接选择本地文件夹上传，也支持输入服务器路径递归扫描 |
 | **结果目录导出** | 批量识别时自动输出 `.json` + `.txt` 到指定目录 |
-| **归档 Excel 自动写入** | 自动提取档号/文号/题名等字段，支持目录或文件路径输入 |
+| **归档 Excel 自动写入** | 自动提取档号、文号、责任者、题名、日期、页数、密级等字段，支持目录或文件路径输入 |
 | 数据存储 | 识别结果以 JSONB 格式持久化存储于 PostgreSQL |
 | REST API | 完整的 RESTful 接口，附带 Swagger 文档 |
 
@@ -131,13 +131,15 @@ DATABASE_URL = "postgresql+asyncpg://postgres:123456@localhost:5432/ocr_db"
 # 1) 启动 Redis
 Start-Process "D:\Redis\redis-server.exe"
 
-# 2) 启动后端（8000，热重载）
+# 2) 启动后端（8000，稳定模式）
 D:\OCR\.venv\Scripts\python.exe D:\OCR\main.py
 
 # 3) 启动前端（3000）
 cd D:\OCR\frontend
 npm run dev -- --host 0.0.0.0 --port 3000
 ```
+
+> 说明：`main.py` 当前默认关闭热重载，以避免 Windows 环境下重载子进程引用错误 Python 解释器导致服务异常。
 
 #### 生产模式（后端直接托管构建后的 Vue 前端）
 
@@ -215,7 +217,7 @@ d:\OCR\
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/ocr/upload?mode=vl\|layout\|ocr` | 上传文件并识别 |
+| POST | `/api/ocr/upload?mode=vl\|layout\|ocr&excel_path=...&excel_init=1&output_dir=...` | 上传文件并识别；支持 `relative_path` 字段保留本地文件夹层级 |
 | GET | `/api/ocr/scan-folder?path=...` | 扫描服务器本地文件夹，返回支持的图片/PDF 文件 |
 | POST | `/api/ocr/upload-from-path?mode=vl&excel_path=...&excel_init=1&output_dir=...` | 按服务器路径识别，可自动写 Excel 和保存结果目录 |
 | GET | `/api/ocr/tasks/folders` | 获取历史文件夹分组列表 |
@@ -290,7 +292,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 9000
 ```
 
 ### Q5: 上传的文件存储在哪里？
-默认存储在项目目录下的 `uploads/` 文件夹中。可在 `config.py` 中修改 `UPLOAD_DIR`。
+默认存储在项目目录下的 `uploads/` 文件夹中。可在 `config.py` 中修改 `UPLOAD_DIR`。若前端通过 `选文件夹` 选择本地目录上传，后端会按相对目录结构写入 `uploads/` 子目录，并给实际文件名追加 UUID 前缀以避免冲突。
 
 ### Q6: 如何在生产环境部署？
 推荐使用 systemd (Linux) 或 NSSM (Windows) 将服务注册为系统服务：
@@ -318,6 +320,12 @@ nssm install PaddleOCR "D:\OCR\.venv\Scripts\python.exe" "-m uvicorn main:app --
 nssm set PaddleOCR AppDirectory "D:\OCR"
 nssm start PaddleOCR
 ```
+
+### Q7: 三个路径都能像资源管理器那样直接选择吗？
+当前纯 Web 前端只支持“源文件夹”通过 `选文件夹` 直接选择。本地 `归档Excel路径` 和 `识别结果输出目录` 需要后端拿到真实 Windows 路径，但浏览器默认不会暴露这类绝对路径，因此这两个字段仍需手动输入。
+
+### Q8: 为什么归档 Excel 里的档号现在会保留末尾流水号？
+系统已将档号提取调整为优先保留完整文件编号，避免同一批 `KJ`/`WS` 文件仅因前缀相同而被误写成同一个档号。例如 `KJ-JJ-2017-02-001-025`、`WS·2024·D30-0156-001` 会完整保留。
 
 ---
 

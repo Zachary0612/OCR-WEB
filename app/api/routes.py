@@ -1,13 +1,21 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
+import json as _json
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query, Form
 from fastapi.responses import PlainTextResponse, JSONResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.db.models import OCRTask
 from app.schemas.ocr_schemas import OCRTaskOut, OCRTaskDetail, OCRTaskList
+from app.services.excel_export import (
+    extract_fields,
+    append_to_excel,
+    init_excel,
+    resolve_excel_output_path,
+    clear_excel_data,
+)
 from app.services.ocr_service import (
     save_upload_file,
     create_task,
@@ -28,10 +36,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ocr", tags=["OCR"])
 
 
+def _apply_post_exports(result: dict, detail, source_path: Path, excel_path: str, excel_init: int, output_dir: str):
+    if detail.status != "done":
+        return result
+
+    if output_dir:
+        try:
+            out_dir = Path(output_dir)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            stem = source_path.stem
+            json_out = out_dir / f"{stem}.json"
+            json_out.write_text(
+                _json.dumps(detail.result_json, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            txt_out = out_dir / f"{stem}.txt"
+            txt_out.write_text(detail.full_text or "", encoding="utf-8")
+            result["output_saved"] = str(out_dir)
+            logger.info("识别结果已保存: %s -> %s", detail.filename, out_dir)
+        except Exception as ex:
+            logger.warning("保存结果文件失败: %s", ex)
+            result["output_saved"] = False
+
+    if excel_path:
+        actual_excel_path = excel_path
+        try:
+            actual_excel_path = resolve_excel_output_path(excel_path)
+            ep = Path(actual_excel_path)
+            if not ep.exists():
+                init_excel(actual_excel_path)
+            elif excel_init:
+                clear_excel_data(actual_excel_path)
+                logger.info("已清空Excel旧数据: %s", actual_excel_path)
+            fields = extract_fields(
+                detail.filename, detail.full_text or "",
+                detail.result_json, detail.page_count
+            )
+            append_to_excel(actual_excel_path, fields)
+            result["excel_exported"] = True
+            result["excel_path"] = actual_excel_path
+            logger.info("已写入归档Excel: %s -> %s", detail.filename, actual_excel_path)
+        except Exception as ex:
+            logger.warning("写入Excel失败: %s", ex)
+            result["excel_exported"] = False
+            result["excel_path"] = actual_excel_path
+
+    return result
+
+
 @router.post("/upload")
 async def upload_and_recognize(
     file: UploadFile = File(...),
+    relative_path: str = Form(""),
     mode: str = Query("vl", pattern="^(vl|layout|ocr)$"),
+    excel_path: str = Query("", description="可选：自动写入归档Excel的路径"),
+    excel_init: int = Query(0, description="为1时先清空Excel数据行（批次第一个文件传入）"),
+    output_dir: str = Query("", description="可选：识别结果输出目录，将生成 .json 和 .txt 文件"),
     db: AsyncSession = Depends(get_db),
 ):
     """上传文件并执行 OCR 识别
@@ -46,7 +106,7 @@ async def upload_and_recognize(
         raise HTTPException(status_code=400, detail=f"文件过大，最大允许 {MAX_FILE_SIZE // 1024 // 1024}MB")
 
     try:
-        file_path, file_type = await save_upload_file(file.filename, content)
+        file_path, file_type = await save_upload_file(file.filename, content, relative_path)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -58,6 +118,7 @@ async def upload_and_recognize(
 
         detail = await get_task_detail(db, task.id)
         result = OCRTaskDetail.model_validate(detail).model_dump(mode='json')
+        result = _apply_post_exports(result, detail, Path(file.filename), excel_path, excel_init, output_dir)
         cache_set(f"task:{detail.id}", result, TASK_TTL)
         invalidate_lists()
         return result
@@ -101,9 +162,6 @@ async def upload_from_path(
     db: AsyncSession = Depends(get_db),
 ):
     """从服务器本地路径直接识别文件（无需上传），可选自动写入归档Excel和结果目录"""
-    import json as _json
-    from app.services.excel_export import extract_fields, append_to_excel, init_excel, resolve_excel_output_path
-
     file_path_str = body.get("file_path", "")
     file_path = Path(file_path_str)
     if not file_path.exists() or not file_path.is_file():
@@ -117,54 +175,9 @@ async def upload_from_path(
         task = await run_ocr_task(db, task.id, mode=mode)
         detail = await get_task_detail(db, task.id)
         result = OCRTaskDetail.model_validate(detail).model_dump(mode='json')
+        result = _apply_post_exports(result, detail, file_path, excel_path, excel_init, output_dir)
         cache_set(f"task:{detail.id}", result, TASK_TTL)
         invalidate_lists()
-
-        if detail.status == "done":
-            # 保存识别结果到输出目录
-            if output_dir:
-                try:
-                    out_dir = Path(output_dir)
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    stem = file_path.stem
-                    json_out = out_dir / f"{stem}.json"
-                    json_out.write_text(
-                        _json.dumps(detail.result_json, ensure_ascii=False, indent=2),
-                        encoding="utf-8"
-                    )
-                    txt_out = out_dir / f"{stem}.txt"
-                    txt_out.write_text(detail.full_text or "", encoding="utf-8")
-                    result["output_saved"] = str(out_dir)
-                    logger.info("识别结果已保存: %s -> %s", detail.filename, out_dir)
-                except Exception as ex:
-                    logger.warning("保存结果文件失败: %s", ex)
-                    result["output_saved"] = False
-
-            # 边识别边写入 Excel
-            if excel_path:
-                actual_excel_path = excel_path
-                try:
-                    actual_excel_path = resolve_excel_output_path(excel_path)
-                    ep = Path(actual_excel_path)
-                    if not ep.exists():
-                        init_excel(actual_excel_path)
-                    elif excel_init:
-                        # 批次第一个文件：先清空数据行
-                        from app.services.excel_export import clear_excel_data
-                        clear_excel_data(actual_excel_path)
-                        logger.info("已清空Excel旧数据: %s", actual_excel_path)
-                    fields = extract_fields(
-                        detail.filename, detail.full_text or "",
-                        detail.result_json, detail.page_count
-                    )
-                    append_to_excel(actual_excel_path, fields)
-                    result["excel_exported"] = True
-                    result["excel_path"] = actual_excel_path
-                    logger.info("已写入归档Excel: %s -> %s", detail.filename, actual_excel_path)
-                except Exception as ex:
-                    logger.warning("写入Excel失败: %s", ex)
-                    result["excel_exported"] = False
-                    result["excel_path"] = actual_excel_path
 
         return result
     except Exception as e:

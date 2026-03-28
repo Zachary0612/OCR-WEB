@@ -47,6 +47,10 @@
                 focus:outline-none focus:ring-1 focus:border-gray-400 placeholder:text-gray-300
                 hover:border-gray-300 transition" />
           </div>
+          <button @click="$refs.folderInput.click()"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition flex-shrink-0">
+            选文件夹
+          </button>
           <button @click="importFromPath" :disabled="!folderPath.trim() || scanning"
             class="px-3 py-1.5 rounded-lg text-xs font-medium text-white transition flex-shrink-0"
             :class="scanning ? 'bg-gray-400' : 'bg-gray-500 hover:bg-gray-600'">
@@ -94,7 +98,7 @@
              class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
           <div class="flex items-center space-x-2 truncate flex-1 mr-2">
             <svg class="w-3.5 h-3.5 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
-            <span class="truncate text-gray-700">{{ f.name }}</span>
+            <span class="truncate text-gray-700">{{ f.webkitRelativePath || f._relativePath || f.name }}</span>
             <span class="text-gray-400 flex-shrink-0">{{ formatSize(f.size) }}</span>
           </div>
           <button @click="removeFile(i)" class="text-gray-400 hover:text-red-500 flex-shrink-0">
@@ -205,7 +209,7 @@ async function onDrop(e) {
       if (item.kind !== 'file') continue
       const entry = item.webkitGetAsEntry?.()
       if (entry?.isDirectory) {
-        reads.push(readDirEntry(entry, files, ACCEPTED))
+        reads.push(readDirEntry(entry, files, ACCEPTED, entry.name))
       } else {
         const f = item.getAsFile()
         if (f) {
@@ -221,7 +225,7 @@ async function onDrop(e) {
   }
 }
 
-function readDirEntry(dirEntry, files, accepted) {
+function readDirEntry(dirEntry, files, accepted, currentPath = dirEntry.name) {
   return new Promise(resolve => {
     const reader = dirEntry.createReader()
     const readBatch = () => {
@@ -232,11 +236,16 @@ function readDirEntry(dirEntry, files, accepted) {
           if (entry.isFile) {
             await new Promise(res => entry.file(f => {
               const ext = '.' + f.name.split('.').pop().toLowerCase()
-              if (accepted.includes(ext)) files.push(f)
+              if (accepted.includes(ext)) {
+                try {
+                  Object.defineProperty(f, '_relativePath', { value: `${currentPath}/${f.name}` })
+                } catch {}
+                files.push(f)
+              }
               res()
             }))
           } else if (entry.isDirectory) {
-            sub.push(readDirEntry(entry, files, accepted))
+            sub.push(readDirEntry(entry, files, accepted, `${currentPath}/${entry.name}`))
           }
         }
         await Promise.all(sub)
@@ -259,6 +268,8 @@ function onFolderSelect(e) {
     return ACCEPTED.includes(ext)
   })
   for (const f of filtered) queue.value.push(f)
+  scanMsg.value = filtered.length ? `已从本地文件夹选择 ${filtered.length} 个文件` : '未找到支持的文件'
+  scanError.value = !filtered.length
   e.target.value = ''
 }
 
@@ -333,12 +344,23 @@ async function startBatch() {
   let lastId = null
   let lastExcelPath = ''
   let excelFailed = false
+  const ep = excelPath.value.trim()
+  const od = outputDir.value.trim()
+  let needExcelInit = !!ep
 
   // Process uploaded files
   for (const f of files) {
     try {
-      const res = await uploadFile(f, props.model.mode)
+      const res = await uploadFile(f, props.model.mode, {
+        relativePath: f.webkitRelativePath || f._relativePath || '',
+        excelPath: ep,
+        excelInit: needExcelInit,
+        outputDir: od,
+      })
       if (res.data?.id) lastId = res.data.id
+      if (res.data?.excel_path) lastExcelPath = res.data.excel_path
+      if (ep && res.data?.excel_exported === false) excelFailed = true
+      if (ep && res.data?.status === 'done') needExcelInit = false
     } catch (err) {
       console.error(`Failed: ${f.name}`, err)
     }
@@ -346,24 +368,21 @@ async function startBatch() {
   }
 
   // Process server-side path files (with optional Excel auto-export and output dir)
-  const ep = excelPath.value.trim()
-  const od = outputDir.value.trim()
-  let isFirstPath = true
   for (const pf of paths) {
     try {
       const { default: axios } = await import('axios')
       let url = `/api/ocr/upload-from-path?mode=${props.model.mode}`
       if (ep) url += `&excel_path=${encodeURIComponent(ep)}`
-      if (ep && isFirstPath) url += `&excel_init=1`
+      if (ep && needExcelInit) url += `&excel_init=1`
       if (od) url += `&output_dir=${encodeURIComponent(od)}`
       const res = await axios.post(url, { file_path: pf.path })
       if (res.data?.id) lastId = res.data.id
       if (res.data?.excel_path) lastExcelPath = res.data.excel_path
       if (ep && res.data?.excel_exported === false) excelFailed = true
+      if (ep && res.data?.status === 'done') needExcelInit = false
     } catch (err) {
       console.error(`Failed path: ${pf.path}`, err)
     }
-    isFirstPath = false
     doneCount.value = ++done
   }
 

@@ -22,6 +22,31 @@ OUTPUT_XLSX = r"D:\GOOLGE\软件著录\归档文件目录（所需字段）.xls"
 
 
 # ===== 字段提取函数 =====
+def _extract_archive_number(filename: str) -> str:
+    stem = Path(filename).stem.strip()
+    if not stem:
+        return ""
+
+    ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+(?:-\d+)+)$', stem, re.IGNORECASE)
+    if ws_match:
+        return ws_match.group(1)
+
+    kj_match = re.match(r'^(KJ(?:-[A-Za-z0-9]+){4,})$', stem, re.IGNORECASE)
+    if kj_match:
+        return kj_match.group(1)
+
+    legacy_ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)$', stem, re.IGNORECASE)
+    if legacy_ws_match:
+        return legacy_ws_match.group(1)
+
+    if re.match(r'^(KJ[-].*)$', stem, re.IGNORECASE):
+        parts = stem.split('-')
+        if len(parts) >= 5:
+            return '-'.join(parts[:5])
+
+    return ""
+
+
 def extract_fields(filename: str, full_text: str, result_json, page_count: int) -> dict:
     """从 OCR 结果中提取关键字段"""
     fields = {
@@ -44,16 +69,7 @@ def extract_fields(filename: str, full_text: str, result_json, page_count: int) 
 
     # --- 档号：从文件名提取 ---
     # 文件名格式如 WS·2024·D10-0311-001.jpg 或 KJ-JJ-2017-02-001-025.jpg
-    fname_stem = Path(filename).stem
-    # 尝试从文件名提取档号模式
-    dh_match = re.match(r'(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)', fname_stem)
-    if dh_match:
-        fields["档号"] = dh_match.group(1)
-    elif re.match(r'(KJ[-].*)', fname_stem):
-        # KJ-JJ-2017-02-001 格式，取前面部分作为档号
-        parts = fname_stem.split('-')
-        if len(parts) >= 5:
-            fields["档号"] = '-'.join(parts[:5])
+    fields["档号"] = _extract_archive_number(filename)
 
     # --- 文号：正则匹配常见公文文号格式 ---
     # 如：渝人社发〔2015〕188号、XX字〔2024〕XX号

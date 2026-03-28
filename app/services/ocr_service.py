@@ -13,17 +13,27 @@ from config import UPLOAD_DIR, ALLOWED_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 
-async def save_upload_file(filename: str, file_content: bytes) -> tuple[str, str]:
+async def save_upload_file(filename: str, file_content: bytes, relative_path: str = "") -> tuple[str, str]:
     """
     保存上传文件，返回 (存储路径, 文件类型)
     """
-    ext = Path(filename).suffix.lower()
+    base_name = Path(filename).name
+    ext = Path(base_name).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise ValueError(f"不支持的文件类型: {ext}，支持: {', '.join(ALLOWED_EXTENSIONS)}")
 
-    # 使用 UUID 避免文件名冲突
-    unique_name = f"{uuid.uuid4().hex}{ext}"
-    save_path = UPLOAD_DIR / unique_name
+    rel_parts = []
+    for part in Path((relative_path or "").replace('\\', '/')).parts:
+        if part in ('', '.', '..'):
+            continue
+        if len(part) == 2 and part[1] == ':':
+            continue
+        rel_parts.append(part)
+
+    save_dir = UPLOAD_DIR.joinpath(*rel_parts[:-1]) if rel_parts else UPLOAD_DIR
+    save_dir.mkdir(parents=True, exist_ok=True)
+    unique_name = f"{uuid.uuid4().hex}_{base_name}"
+    save_path = save_dir / unique_name
     save_path.write_bytes(file_content)
     return str(save_path), ext
 
