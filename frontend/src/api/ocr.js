@@ -15,8 +15,10 @@ export const batchUpload = (files, mode, scheduledAt = null) => {
   return api.post(`/batch-upload?mode=${mode}`, form)
 }
 
-export const getTasks = (page = 1, pageSize = 20) =>
-  api.get('/tasks', { params: { page, page_size: pageSize } })
+export const getTasks = (page = 1, pageSize = 20, folder = '') =>
+  api.get('/tasks', { params: { page, page_size: pageSize, ...(folder ? { folder } : {}) } })
+
+export const getFolders = () => api.get('/tasks/folders')
 
 export const searchTasks = (q, page = 1, pageSize = 20) =>
   api.get('/tasks/search', { params: { q, page, page_size: pageSize } })
@@ -36,3 +38,8 @@ export const getBatchQueue = (mode) => api.get(`/batch-queue?mode=${mode}`)
 export const startBatch = (mode) => api.post(`/batch-start?mode=${mode}`)
 
 export const removeBatchItem = (id) => api.delete(`/batch-queue/${id}`)
+
+export const deleteTask = (id) => api.delete(`/tasks/${id}`)
+
+export const deleteTasksByFolder = (folder) =>
+  api.delete('/tasks/by-folder', { params: { folder } })

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class OCRTaskOut(BaseModel):
     id: int
     filename: str
+    file_path: str | None = None
     file_type: str
     mode: str = "layout"
     status: str

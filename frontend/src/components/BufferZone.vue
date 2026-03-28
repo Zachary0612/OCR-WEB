@@ -37,7 +37,7 @@
         <p class="text-xs text-gray-400 mt-1">支持 JPG / PNG / PDF，可多选</p>
       </div>
       <!-- 本地路径导入 -->
-      <div class="mt-2">
+      <div class="mt-2 space-y-1.5">
         <div class="flex space-x-1.5">
           <div class="relative flex-1">
             <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
@@ -53,6 +53,28 @@
             <svg v-if="scanning" class="w-3 h-3 inline animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16 8 8 0 008-8h-4"/></svg>
             <span v-else>导入</span>
           </button>
+        </div>
+        <!-- 归档Excel输出路径 -->
+        <div class="flex space-x-1.5">
+          <div class="relative flex-1">
+            <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <input v-model="excelPath"
+              type="text" placeholder="归档Excel路径（可选，支持目录或文件），如 D:\软件著录 或 D:\软件著录\归档文件目录.xlsx"
+              class="w-full pl-8 pr-2 py-1.5 text-xs border border-dashed border-gray-200 rounded-lg
+                focus:outline-none focus:ring-1 focus:border-gray-400 placeholder:text-gray-300
+                hover:border-gray-300 transition" />
+          </div>
+        </div>
+        <!-- 识别结果输出目录 -->
+        <div class="flex space-x-1.5">
+          <div class="relative flex-1">
+            <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z"/></svg>
+            <input v-model="outputDir"
+              type="text" placeholder="识别结果输出目录（可选），如 D:\\results"
+              class="w-full pl-8 pr-2 py-1.5 text-xs border border-dashed border-gray-200 rounded-lg
+                focus:outline-none focus:ring-1 focus:border-gray-400 placeholder:text-gray-300
+                hover:border-gray-300 transition" />
+          </div>
         </div>
         <p v-if="scanMsg" class="mt-1 text-xs" :class="scanError ? 'text-red-500' : 'text-green-600'">{{ scanMsg }}</p>
       </div>
@@ -163,6 +185,8 @@ const doneCount = ref(0)
 const totalCount = ref(0)
 const fileInput = ref(null)
 const folderPath = ref('')
+const excelPath = ref('')
+const outputDir = ref('')
 const scanning = ref(false)
 const scanMsg = ref('')
 const scanError = ref(false)
@@ -307,6 +331,8 @@ async function startBatch() {
   totalCount.value = files.length + paths.length
   let done = 0
   let lastId = null
+  let lastExcelPath = ''
+  let excelFailed = false
 
   // Process uploaded files
   for (const f of files) {
@@ -319,16 +345,36 @@ async function startBatch() {
     doneCount.value = ++done
   }
 
-  // Process server-side path files
+  // Process server-side path files (with optional Excel auto-export and output dir)
+  const ep = excelPath.value.trim()
+  const od = outputDir.value.trim()
+  let isFirstPath = true
   for (const pf of paths) {
     try {
       const { default: axios } = await import('axios')
-      const res = await axios.post(`/api/ocr/upload-from-path?mode=${props.model.mode}`, { file_path: pf.path })
+      let url = `/api/ocr/upload-from-path?mode=${props.model.mode}`
+      if (ep) url += `&excel_path=${encodeURIComponent(ep)}`
+      if (ep && isFirstPath) url += `&excel_init=1`
+      if (od) url += `&output_dir=${encodeURIComponent(od)}`
+      const res = await axios.post(url, { file_path: pf.path })
       if (res.data?.id) lastId = res.data.id
+      if (res.data?.excel_path) lastExcelPath = res.data.excel_path
+      if (ep && res.data?.excel_exported === false) excelFailed = true
     } catch (err) {
       console.error(`Failed path: ${pf.path}`, err)
     }
+    isFirstPath = false
     doneCount.value = ++done
+  }
+
+  if (ep) {
+    if (excelFailed) {
+      scanMsg.value = `归档Excel写入失败：${lastExcelPath || ep}`
+      scanError.value = true
+    } else if (lastExcelPath) {
+      scanMsg.value = `已写入归档Excel：${lastExcelPath}`
+      scanError.value = false
+    }
   }
 
   if (lastId) emit('view-result', lastId)

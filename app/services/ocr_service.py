@@ -3,7 +3,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.ocr_engine import ocr_document
@@ -82,17 +82,30 @@ async def run_ocr_task(db: AsyncSession, task_id: int, mode: str = "layout") -> 
     return task
 
 
-async def get_task_list(db: AsyncSession, page: int = 1, page_size: int = 20) -> tuple[list[OCRTask], int]:
-    """获取任务列表（分页）"""
-    total_result = await db.execute(select(func.count(OCRTask.id)))
+async def get_task_list(db: AsyncSession, page: int = 1, page_size: int = 20, folder: str = "") -> tuple[list[OCRTask], int]:
+    """获取任务列表（分页），可按源文件夹过滤"""
+    from sqlalchemy import and_
+    conditions = []
+    if folder:
+        # 匹配该文件夹下的文件（file_path 居于此目录）
+        # 使用 starts_with() 替代 LIKE，避免 PostgreSQL LIKE 对 Windows \ 路径的转义问题
+        base = folder.rstrip("/\\")
+        conditions.append(
+            or_(
+                func.starts_with(OCRTask.file_path, base + "\\"),
+                func.starts_with(OCRTask.file_path, base + "/"),
+            )
+        )
+
+    base_q = select(func.count(OCRTask.id))
+    if conditions:
+        base_q = base_q.where(and_(*conditions))
+    total_result = await db.execute(base_q)
     total = total_result.scalar() or 0
 
-    stmt = (
-        select(OCRTask)
-        .order_by(desc(OCRTask.created_at))
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
+    stmt = select(OCRTask).order_by(desc(OCRTask.created_at)).offset((page - 1) * page_size).limit(page_size)
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
     result = await db.execute(stmt)
     tasks = list(result.scalars().all())
     return tasks, total

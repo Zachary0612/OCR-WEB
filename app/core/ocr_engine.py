@@ -11,7 +11,21 @@ from paddleocr import PaddleOCR
 # 图片最大像素面积限制（长×宽），超过则等比缩放
 MAX_IMAGE_PIXELS = 2500 * 2500
 
-from config import OCR_LANG
+from config import OCR_LANG, UPLOAD_DIR
+
+
+def _cv_imread(path: str):
+    """读取图片（支持中文路径）"""
+    data = np.fromfile(path, dtype=np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _cv_imwrite(path: str, img):
+    """保存图片（支持中文路径）"""
+    ext = Path(path).suffix or '.jpg'
+    ok, buf = cv2.imencode(ext, img)
+    if ok:
+        buf.tofile(path)
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +68,24 @@ def get_layout_pipeline():
 def _maybe_resize_image(image_path: str) -> str:
     """如果图片过大，等比缩放后保存到临时文件，返回新路径；否则返回原路径"""
     try:
-        img = cv2.imread(image_path)
+        img = _cv_imread(image_path)
         if img is None:
             return image_path
         h, w = img.shape[:2]
         pixels = h * w
         if pixels <= MAX_IMAGE_PIXELS:
+            del img
             return image_path
         scale = (MAX_IMAGE_PIXELS / pixels) ** 0.5
         new_w = int(w * scale)
         new_h = int(h * scale)
         logger.info("缩放大图: %s (%dx%d -> %dx%d, %.0f%%)", Path(image_path).name, w, h, new_w, new_h, scale * 100)
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        # 保存到临时文件
+        # 保存到 uploads 目录（纯 ASCII 路径，避免中文路径问题）
         suffix = Path(image_path).suffix or '.jpg'
-        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=Path(image_path).parent)
-        cv2.imwrite(tmp.name, resized)
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=str(UPLOAD_DIR))
         tmp.close()
+        _cv_imwrite(tmp.name, resized)
         del img, resized
         return tmp.name
     except Exception as e:
@@ -347,18 +362,21 @@ def ocr_image_with_vl(image_path: str) -> dict:
 
 # ===== PDF 转图片 =====
 def pdf_to_images(pdf_path: str) -> list[str]:
-    """将 PDF 转换为图片列表"""
+    """将 PDF 转换为图片列表（保存到 uploads 目录避免中文路径问题）"""
     doc = fitz.open(pdf_path)
     image_paths = []
-    pdf_dir = Path(pdf_path).parent
+    prefix = Path(pdf_path).stem[:8]  # 取文件名前8字符作为前缀
 
     for page_num in range(len(doc)):
         page = doc[page_num]
         mat = fitz.Matrix(2, 2)  # 2x 分辨率
         pix = page.get_pixmap(matrix=mat)
-        img_path = str(pdf_dir / f"_page_{page_num + 1}.png")
-        pix.save(img_path)
-        image_paths.append(img_path)
+        # 保存到 uploads 目录（纯 ASCII 路径）
+        tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False, dir=str(UPLOAD_DIR),
+                                          prefix=f'page{page_num+1}_')
+        tmp.close()
+        pix.save(tmp.name)
+        image_paths.append(tmp.name)
 
     doc.close()
     return image_paths

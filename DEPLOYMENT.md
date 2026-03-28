@@ -2,20 +2,24 @@
 
 ## 1. 项目概述
 
-本系统基于 **PaddleOCR 3.0** 深度学习引擎，集成 **双模型引擎**（PP-OCRv5 + PP-StructureV3），提供文档图像的文字识别（OCR）、**版面分析**和**表格结构识别**能力。支持图片和 PDF 文件的上传、识别、在线编辑与结果存储。系统提供 **Web 可视化界面**和 **REST API** 两种使用方式。
+本系统基于 **PaddleOCR 3.x** 深度学习引擎，集成 **三模型识别链路**（PaddleOCR-VL-1.5 / PP-StructureV3 / PP-OCRv5），提供图片与 PDF 的上传识别、本地路径批量导入、结构化解析、全文搜索、归档 Excel 导出与历史归档管理能力。系统采用 **Vue 3 + FastAPI** 前后端分离架构，并通过 **Redis + PostgreSQL** 提供缓存与持久化支持。
 
 ### 核心功能
 
 | 功能 | 说明 |
 |------|------|
 | 文档上传 | 支持 JPG、PNG、BMP、TIFF、PDF 格式，最大 50MB |
-| **双模型引擎** | PP-OCRv5（快速文字识别）+ PP-StructureV3（版面解析+表格识别），前端一键切换 |
+| **三模型引擎** | VL 视觉语言模型 / PP-StructureV3 / PP-OCRv5，前端一键切换 |
 | **版面分析** | RT-DETR-H 17 类检测：标题/文本/表格/图片/公式/印章等 |
 | **表格识别** | SLANet_plus 自动识别表格结构，还原为 HTML 表格 |
 | **可编辑结果** | 双击 OCR 区块即可修正文字，保存回数据库 |
-| **Bbox 高亮** | 点击识别区块时在源图上高亮对应检测框 |
-| 源文件预览 | 上传或历史文件在中间面板实时预览（含 PDF 翻页缩放） |
-| 结果展示 | 右侧面板「文档解析」（结构化区域）+「JSON」（语法高亮）双标签页 |
+| **Bbox 高亮** | 点击识别区块时在源图上高亮对应检测框，支持多边形框 |
+| **历史按文件夹分组** | 首页历史按源目录聚合显示，点击后进入同目录结果页 |
+| **文件夹级历史删除** | 历史目录支持按文件夹批量删除识别记录 |
+| **目录侧边栏切换** | 结果页左侧显示当前文件夹全部文件，可快速切换查看 |
+| **本地路径批量识别** | 输入服务器路径递归扫描文件夹，支持批量识别 |
+| **结果目录导出** | 批量识别时自动输出 `.json` + `.txt` 到指定目录 |
+| **归档 Excel 自动写入** | 自动提取档号/文号/题名等字段，支持目录或文件路径输入 |
 | 数据存储 | 识别结果以 JSONB 格式持久化存储于 PostgreSQL |
 | REST API | 完整的 RESTful 接口，附带 Swagger 文档 |
 
@@ -23,12 +27,14 @@
 
 | 组件 | 技术 |
 |------|------|
-| OCR 引擎 | PaddleOCR 3.4 + PaddlePaddle GPU 3.3.1 |
-| 版面分析 | PP-StructureV3 (PaddleX layout_parsing, 含 10 个模型) |
+| OCR 引擎 | PaddleOCR 3.x + PaddlePaddle GPU |
+| 视觉语言模型 | PaddleOCR-VL-1.5 |
+| 版面分析 | PP-StructureV3 (PaddleX layout_parsing) |
 | 表格识别 | SLANet_plus |
 | 后端框架 | FastAPI (Python 3.12) |
 | 数据库 | PostgreSQL + SQLAlchemy ORM (asyncpg) |
-| 前端 | HTML + TailwindCSS + PDF.js + FontAwesome |
+| 缓存 | Redis (redis-py) |
+| 前端 | Vue 3 + Vite + TailwindCSS + Axios |
 | PDF 处理 | PyMuPDF (fitz) |
 | GPU 加速 | NVIDIA CUDA 12.x |
 
@@ -119,15 +125,30 @@ DATABASE_URL = "postgresql+asyncpg://postgres:123456@localhost:5432/ocr_db"
 
 ### 3.5 启动服务
 
-```bash
-# 开发模式（带热重载）
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+#### 开发模式
 
-# 生产模式
-python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2
+```powershell
+# 1) 启动 Redis
+Start-Process "D:\Redis\redis-server.exe"
+
+# 2) 启动后端（8000，热重载）
+D:\OCR\.venv\Scripts\python.exe D:\OCR\main.py
+
+# 3) 启动前端（3000）
+cd D:\OCR\frontend
+npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
-首次启动时，系统会自动下载 OCR 模型文件（PP-OCRv5 约 200MB + PP-StructureV3 约 500MB），模型缓存在项目的 `.cache/` 目录下。
+#### 生产模式（后端直接托管构建后的 Vue 前端）
+
+```powershell
+cd D:\OCR\frontend
+npm run build
+
+D:\OCR\.venv\Scripts\python.exe D:\OCR\main.py
+```
+
+首次启动时，系统会自动下载 OCR 模型文件，模型缓存在项目的 `.cache/` 目录下。VL 模型体积更大，首次使用时加载时间会明显长于后续请求。
 
 > **安装版面解析依赖**（表格识别必需）：
 > ```bash
@@ -136,11 +157,12 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2
 
 ### 3.6 访问系统
 
-| 入口 | 地址 |
+| 场景 | 地址 |
 |------|------|
-| Web 界面 | http://localhost:8000 |
-| API 文档（Swagger） | http://localhost:8000/docs |
-| API 文档（ReDoc） | http://localhost:8000/redoc |
+| 前端开发环境 | http://localhost:3000 |
+| 后端 API 文档（Swagger） | http://localhost:8000/docs |
+| 后端 API 文档（ReDoc） | http://localhost:8000/redoc |
+| 生产环境前端入口（构建后） | http://localhost:8000 |
 
 ---
 
@@ -148,115 +170,63 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2
 
 ```
 d:\OCR\
-├── main.py                  # 应用入口
-├── config.py                # 配置文件（数据库、缓存、OCR 参数）
-├── requirements.txt         # Python 依赖
-├── DEPLOYMENT.md            # 部署文档（本文件）
-├── README.md                # 项目说明
-├── progress.md              # 开发进度
+├── main.py                        # 应用入口，支持 Vue SPA 回退与 /old 旧版入口
+├── config.py                      # 配置文件（数据库、上传目录等）
+├── requirements.txt               # Python 依赖
+├── DEPLOYMENT.md                  # 部署文档（本文件）
+├── README.md                      # 项目说明
+├── extract_fields.py              # 独立脚本：从数据库批量提取字段写入 Excel
+├── check_tasks.py                 # 独立脚本：查询任务状态统计
 ├── app/
 │   ├── api/
-│   │   └── routes.py        # REST API 路由
+│   │   └── routes.py              # REST API 路由（上传/扫描/识别/搜索/导出）
 │   ├── core/
-│   │   └── ocr_engine.py    # OCR 引擎封装
+│   │   ├── ocr_engine.py          # OCR 引擎封装
+│   │   └── redis_cache.py         # Redis 缓存封装
 │   ├── db/
-│   │   ├── database.py      # 数据库连接
-│   │   └── models.py        # 数据模型（OCRTask, OCRResult）
+│   │   ├── database.py            # 数据库连接
+│   │   └── models.py              # 数据模型（ocr_tasks 表）
 │   ├── schemas/
-│   │   └── ocr_schemas.py   # Pydantic 响应模型
+│   │   └── ocr_schemas.py         # Pydantic 响应模型
 │   └── services/
-│       └── ocr_service.py   # 业务逻辑层
+│       ├── ocr_service.py         # 业务逻辑层
+│       └── excel_export.py        # 归档字段提取与 Excel 写入服务
+├── frontend/                      # Vue 3 前端源码
+│   ├── src/
+│   │   ├── views/
+│   │   │   ├── Home.vue           # 首页（模型区 + 历史区）
+│   │   │   ├── Result.vue         # 结果页（预览/侧边栏/编辑）
+│   │   │   └── Search.vue         # 搜索页
+│   │   └── components/
+│   │       ├── BufferZone.vue     # 批量上传区
+│   │       └── HistoryList.vue    # 历史目录列表
+│   ├── package.json
+│   └── vite.config.js             # 前端代理与构建配置
 ├── templates/
-│   └── index.html           # Web 前端页面
-├── uploads/                 # 上传文件存储目录（自动创建）
-└── .cache/                  # 模型缓存目录（自动创建）
+│   └── index.html                 # 旧版单页面（备用入口 /old）
+├── static/vue/                    # Vue 构建产物（生产环境由后端直接提供）
+├── uploads/                       # 上传文件存储目录（自动创建）
+└── .cache/                        # 模型缓存目录（自动创建）
 ```
 
 ---
 
 ## 5. API 接口说明
 
-### 5.1 上传并识别文档
-
-```
-POST /api/ocr/upload?mode=layout
-Content-Type: multipart/form-data
-```
-
-**请求参数：**
-
-| 参数 | 类型 | 说明 |
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| file | File | 要识别的文件（JPG/PNG/BMP/TIFF/PDF） |
-| mode | Query | `layout`=PP-StructureV3 版面解析（含表格），`ocr`=PP-OCRv5 纯文字（快速） |
-
-**响应示例：**
-
-```json
-{
-  "id": 1,
-  "filename": "test.jpg",
-  "file_type": ".jpg",
-  "status": "done",
-  "full_text": "识别到的文字内容...",
-  "page_count": 1,
-  "result_json": [
-    {
-      "page_num": 1,
-      "regions": [
-        {"type": "title", "bbox": [x1,y1,x2,y2], "content": "标题文字", "html": null},
-        {"type": "table", "bbox": [x1,y1,x2,y2], "content": "", "html": "<table>...</table>"},
-        {"type": "text", "bbox": [x1,y1,x2,y2], "content": "段落文字", "html": null}
-      ],
-      "lines": [
-        {"line_num": 1, "text": "第一行文字", "confidence": 0.98, "bbox": [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]}
-      ]
-    }
-  ],
-  "created_at": "2025-03-25T20:00:00",
-  "updated_at": "2025-03-25T20:00:01"
-}
-```
-
-### 5.2 获取任务列表
-
-```
-GET /api/ocr/tasks?page=1&page_size=20
-```
-
-### 5.3 获取任务详情
-
-```
-GET /api/ocr/tasks/{task_id}
-```
-
-### 5.4 获取源文件
-
-```
-GET /api/ocr/tasks/{task_id}/file
-```
-
-### 5.5 更新识别结果（编辑后保存）
-
-```
-PUT /api/ocr/tasks/{task_id}
-Content-Type: application/json
-
-{"result_json": [...], "full_text": "..."}
-```
-
-### 5.6 导出识别结果
-
-```
-GET /api/ocr/tasks/{task_id}/export?fmt=txt
-GET /api/ocr/tasks/{task_id}/export?fmt=json
-```
-
-### 5.7 删除任务
-
-```
-DELETE /api/ocr/tasks/{task_id}
-```
+| POST | `/api/ocr/upload?mode=vl\|layout\|ocr` | 上传文件并识别 |
+| GET | `/api/ocr/scan-folder?path=...` | 扫描服务器本地文件夹，返回支持的图片/PDF 文件 |
+| POST | `/api/ocr/upload-from-path?mode=vl&excel_path=...&excel_init=1&output_dir=...` | 按服务器路径识别，可自动写 Excel 和保存结果目录 |
+| GET | `/api/ocr/tasks/folders` | 获取历史文件夹分组列表 |
+| GET | `/api/ocr/tasks?page=1&page_size=20&folder=...` | 获取任务列表，支持按文件夹过滤，`page_size` 最大 1000 |
+| GET | `/api/ocr/tasks/{task_id}` | 获取任务详情 |
+| PUT | `/api/ocr/tasks/{task_id}` | 更新识别结果（编辑后保存） |
+| DELETE | `/api/ocr/tasks/{task_id}` | 删除单个任务 |
+| DELETE | `/api/ocr/tasks/by-folder?folder=...` | 删除某个历史文件夹下的全部任务 |
+| GET | `/api/ocr/tasks/{task_id}/file` | 获取源文件（图片/PDF 预览） |
+| GET | `/api/ocr/tasks/{task_id}/export?fmt=txt\|json` | 导出识别结果 |
+| GET | `/api/ocr/tasks/search?q=关键词` | 搜索已识别文档全文 |
 
 > 完整 API 文档请访问 http://localhost:8000/docs（Swagger UI）
 
@@ -270,9 +240,11 @@ DELETE /api/ocr/tasks/{task_id}
 |------|------|------|
 | id | SERIAL PRIMARY KEY | 任务 ID |
 | filename | VARCHAR(255) | 原始文件名 |
-| file_path | VARCHAR(500) | 服务器存储路径 |
+| file_path | VARCHAR(500) | 服务器存储路径（本地路径导入时保留原始路径） |
 | file_type | VARCHAR(20) | 文件类型（.jpg/.pdf 等） |
+| mode | VARCHAR(20) | 识别模型（vl/layout/ocr） |
 | status | VARCHAR(20) | 状态（pending/processing/done/failed） |
+| result_json | JSONB | 完整识别结果（regions/lines/table html/bbox） |
 | full_text | TEXT | 完整识别文本 |
 | page_count | INTEGER | 总页数 |
 | error_message | TEXT | 错误信息（失败时） |

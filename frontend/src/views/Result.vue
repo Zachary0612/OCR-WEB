@@ -21,10 +21,41 @@
     </div>
     <div v-else-if="error" class="flex-1 flex items-center justify-center text-red-500">{{ error }}</div>
 
-    <!-- Main content: left preview (40%) + right result (60%) -->
+    <!-- Main content: [folder sidebar] + left preview (40%) + right result (60%) -->
     <div v-else class="flex-1 flex min-h-0">
+
+      <!-- ===== Folder File Sidebar (only when folder param exists) ===== -->
+      <div v-if="folderPath" class="w-52 flex-shrink-0 flex flex-col bg-[#12122a] border-r border-[#2a2a4a] overflow-hidden">
+        <div class="px-3 py-2.5 border-b border-[#2a2a4a] flex items-center space-x-2">
+          <svg class="w-3.5 h-3.5 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"/></svg>
+          <span class="text-xs text-gray-300 font-medium truncate">{{ folderLabel }}</span>
+        </div>
+        <div class="flex-1 overflow-y-auto">
+          <div v-if="folderLoading" class="flex items-center justify-center py-6">
+            <svg class="w-4 h-4 animate-spin text-blue-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16 8 8 0 008-8h-4"/></svg>
+          </div>
+          <div v-for="ft in folderTasks" :key="ft.id"
+            @click="switchTask(ft.id)"
+            class="flex items-center px-3 py-2.5 cursor-pointer transition-all border-b border-[#1e1e3a] group"
+            :class="ft.id == props.id ? 'bg-blue-600/20 border-l-2 border-l-blue-400' : 'hover:bg-[#1e1e3a]'">
+            <div class="w-7 h-7 flex-shrink-0 rounded flex items-center justify-center mr-2"
+              :class="ft.id == props.id ? 'bg-blue-500/30' : 'bg-[#2a2a4a] group-hover:bg-[#33335a]'">
+              <svg class="w-3.5 h-3.5" :class="ft.id == props.id ? 'text-blue-300' : 'text-gray-400'" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/></svg>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs truncate" :class="ft.id == props.id ? 'text-blue-200 font-medium' : 'text-gray-300 group-hover:text-white'">{{ ft.filename }}</div>
+              <div class="text-[10px] text-gray-500 mt-0.5">{{ formatSidebarTime(ft.created_at) }}</div>
+            </div>
+          </div>
+          <div v-if="!folderLoading && !folderTasks.length" class="px-3 py-4 text-xs text-gray-500 text-center">无文件</div>
+        </div>
+        <div v-if="folderTasks.length" class="px-3 py-2 border-t border-[#2a2a4a] text-[10px] text-gray-500 text-center">
+          共 {{ folderTasks.length }} 个文件
+        </div>
+      </div>
+
       <!-- ===== Left: Source Preview ===== -->
-      <div class="w-[42%] flex-shrink-0 flex flex-col border-r border-gray-200 bg-white">
+      <div class="flex-shrink-0 flex flex-col border-r border-gray-200 bg-white" :class="folderPath ? 'w-[38%]' : 'w-[42%]'">
         <div class="px-3 py-2 border-b border-gray-100 flex items-center justify-between">
           <span class="text-xs text-gray-500 font-medium">源文件</span>
           <div class="flex items-center space-x-1 text-xs text-gray-400">
@@ -215,10 +246,48 @@
 
 <script setup>
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
-import { getTask, getTaskFile } from '../api/ocr.js'
+import { useRoute, useRouter } from 'vue-router'
+import { getTask, getTaskFile, getTasks } from '../api/ocr.js'
 import axios from 'axios'
+import dayjs from 'dayjs'
 
 const props = defineProps({ id: [String, Number] })
+const route = useRoute()
+const router = useRouter()
+
+// Folder sidebar state
+const folderPath = computed(() => route.query.folder || '')
+const folderLabel = computed(() => {
+  const f = folderPath.value
+  if (!f) return ''
+  if (f.includes('uploads')) return '直接上传'
+  const parts = f.replace(/\\/g, '/').split('/')
+  return parts.filter(Boolean).pop() || f
+})
+const folderTasks = ref([])
+const folderLoading = ref(false)
+
+async function loadFolderTasks() {
+  if (!folderPath.value) return
+  folderLoading.value = true
+  try {
+    const { data } = await getTasks(1, 500, folderPath.value)
+    folderTasks.value = (data.tasks || []).slice().reverse()
+  } catch (e) {
+    console.error('Load folder tasks failed', e)
+  } finally {
+    folderLoading.value = false
+  }
+}
+
+function switchTask(taskId) {
+  if (taskId == props.id) return
+  router.push(`/result/${taskId}?folder=${encodeURIComponent(folderPath.value)}`)
+}
+
+function formatSidebarTime(t) {
+  return t ? dayjs(t).format('MM-DD HH:mm') : ''
+}
 
 const task = ref(null)
 const resultData = ref(null)
@@ -423,19 +492,25 @@ watch(activeRegion, (i) => {
   }
 })
 
-onMounted(async () => {
+async function loadTask(id) {
+  loading.value = true
+  error.value = ''
+  task.value = null
+  resultData.value = null
+  fileUrl.value = ''
+  imgW.value = 0; imgH.value = 0
+  activeRegion.value = -1
+  pageNum.value = 1
   try {
-    const { data } = await getTask(props.id)
+    const { data } = await getTask(id)
     task.value = data
     resultData.value = data.result_data
 
-    const fileRes = await getTaskFile(props.id)
+    const fileRes = await getTaskFile(id)
     fileUrl.value = URL.createObjectURL(fileRes.data)
 
     if (isPdf.value) {
-      // Use browser built-in PDF viewer via iframe
       await nextTick()
-      // Set iframe height to fill available space
       const container = document.querySelector('.preview-container')
       if (container) previewH.value = container.clientHeight - 20
     }
@@ -444,6 +519,19 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+}
+
+onMounted(async () => {
+  await loadTask(props.id)
+  loadFolderTasks()
+})
+
+watch(() => props.id, (newId) => {
+  if (newId) loadTask(newId)
+})
+
+watch(folderPath, () => {
+  loadFolderTasks()
 })
 </script>
 
