@@ -3,11 +3,13 @@ import traceback
 import uvicorn
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request as FastAPIRequest
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 
 from app.api.routes import router as ocr_router
 from app.db.database import init_db
@@ -54,14 +56,35 @@ async def global_exception_handler(request: FastAPIRequest, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
-@app.get("/")
-async def index(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+# Vue SPA: serve built files if available, otherwise fall back to old template
+VUE_DIST = BASE_DIR / "static" / "vue"
 
 
 @app.get("/favicon.ico")
 async def favicon():
     return FileResponse(str(BASE_DIR / "static" / "favicon.ico"), media_type="image/x-icon")
+
+
+@app.get("/old")
+async def old_index(request: Request):
+    """旧版单页面（保留备用）"""
+    return templates.TemplateResponse(request, "index.html")
+
+
+@app.get("/{full_path:path}")
+async def serve_vue(full_path: str):
+    """Vue SPA catch-all: serve index.html for all non-API routes"""
+    # Try to serve static asset from Vue build
+    if full_path:
+        file = VUE_DIST / full_path
+        if file.is_file():
+            return FileResponse(str(file))
+    # Fallback to Vue index.html (SPA routing)
+    vue_index = VUE_DIST / "index.html"
+    if vue_index.exists():
+        return HTMLResponse(vue_index.read_text(encoding="utf-8"))
+    # If Vue not built yet, serve old template
+    return templates.TemplateResponse("index.html", {"request": None})
 
 
 if __name__ == "__main__":

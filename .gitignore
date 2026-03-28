@@ -39,3 +39,7 @@ start.bat
 
 # Temp
 *.tmp
+
+# Frontend
+frontend/node_modules/
+static/vue/

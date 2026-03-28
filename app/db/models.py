@@ -14,6 +14,7 @@ class OCRTask(Base):
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_path: Mapped[str] = mapped_column(String(500), nullable=False)
     file_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    mode: Mapped[str] = mapped_column(String(20), default="layout")  # vl/layout/ocr
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending/processing/done/failed
     result_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # OCR 结果 JSON
     full_text: Mapped[str | None] = mapped_column(Text, nullable=True)

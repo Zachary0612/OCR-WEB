@@ -1,9 +1,15 @@
 import logging
+import tempfile
 from difflib import SequenceMatcher
 from pathlib import Path
 
+import cv2
+import numpy as np
 import fitz  # PyMuPDF
 from paddleocr import PaddleOCR
+
+# 图片最大像素面积限制（长×宽），超过则等比缩放
+MAX_IMAGE_PIXELS = 2500 * 2500
 
 from config import OCR_LANG
 
@@ -43,6 +49,33 @@ def get_layout_pipeline():
         )
         logger.info("PP-StructureV3 版面解析管线初始化完成")
     return _layout_pipeline
+
+
+def _maybe_resize_image(image_path: str) -> str:
+    """如果图片过大，等比缩放后保存到临时文件，返回新路径；否则返回原路径"""
+    try:
+        img = cv2.imread(image_path)
+        if img is None:
+            return image_path
+        h, w = img.shape[:2]
+        pixels = h * w
+        if pixels <= MAX_IMAGE_PIXELS:
+            return image_path
+        scale = (MAX_IMAGE_PIXELS / pixels) ** 0.5
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        logger.info("缩放大图: %s (%dx%d -> %dx%d, %.0f%%)", Path(image_path).name, w, h, new_w, new_h, scale * 100)
+        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        # 保存到临时文件
+        suffix = Path(image_path).suffix or '.jpg'
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False, dir=Path(image_path).parent)
+        cv2.imwrite(tmp.name, resized)
+        tmp.close()
+        del img, resized
+        return tmp.name
+    except Exception as e:
+        logger.warning("图片缩放失败 %s: %s", image_path, e)
+        return image_path
 
 
 def _poly_to_list(poly) -> list[list[float]]:
@@ -360,11 +393,17 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
             image_paths = pdf_to_images(file_path)
             temp_images = image_paths
             for page_idx, img_path in enumerate(image_paths):
-                page_result = recognize_fn(img_path)
+                resized_path = _maybe_resize_image(img_path)
+                if resized_path != img_path:
+                    temp_images.append(resized_path)
+                page_result = recognize_fn(resized_path)
                 page_result["page_num"] = page_idx + 1
                 pages.append(page_result)
         else:
-            page_result = recognize_fn(file_path)
+            resized_path = _maybe_resize_image(file_path)
+            if resized_path != file_path:
+                temp_images.append(resized_path)
+            page_result = recognize_fn(resized_path)
             page_result["page_num"] = 1
             pages.append(page_result)
 
