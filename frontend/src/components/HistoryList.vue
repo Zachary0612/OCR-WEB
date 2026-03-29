@@ -112,7 +112,15 @@ function isUploadFolder(folder) {
 
 function folderLabel(folder) {
   if (!folder) return '未知目录'
-  if (isUploadFolder(folder)) return '直接上传'
+  if (isUploadFolder(folder)) {
+    const norm = folder.replace(/\\/g, '/')
+    const idx = norm.toLowerCase().lastIndexOf('/uploads')
+    if (idx !== -1) {
+      const sub = norm.slice(idx + '/uploads'.length).replace(/^\/+/, '')
+      if (sub) return sub.replace(/\//g, ' / ')
+    }
+    return '直接上传'
+  }
   const parts = folder.replace(/\\/g, '/').split('/')
   return parts.filter(Boolean).pop() || folder
 }

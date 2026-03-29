@@ -26,3 +26,21 @@ class OCRTask(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
+
+
+class ArchiveRecord(Base):
+    __tablename__ = "archive_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)           # 关联 ocr_tasks.id，外部导入时为 NULL
+    batch_id: Mapped[str | None] = mapped_column(String(100), nullable=True)      # 批次标识，前端生成
+    batch_folder: Mapped[str | None] = mapped_column(String(500), nullable=True)  # 源文件夹路径
+    archive_no: Mapped[str | None] = mapped_column(String(200), nullable=True)    # 档号
+    doc_no: Mapped[str | None] = mapped_column(String(200), nullable=True)        # 文号
+    responsible: Mapped[str | None] = mapped_column(String(500), nullable=True)   # 责任者
+    title: Mapped[str | None] = mapped_column(String(1000), nullable=True)        # 题名
+    date: Mapped[str | None] = mapped_column(String(50), nullable=True)           # 日期
+    pages: Mapped[str | None] = mapped_column(String(20), nullable=True)          # 页数
+    classification: Mapped[str | None] = mapped_column(String(50), nullable=True) # 密级
+    remarks: Mapped[str | None] = mapped_column(String(1000), nullable=True)      # 备注
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

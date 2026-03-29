@@ -148,13 +148,28 @@
              :class="cc.progressBar"
              :style="{width: `${totalCount ? (doneCount/totalCount)*100 : 0}%`}"></div>
       </div>
+
+      <!-- Post-batch: export archive Excel (two files) -->
+      <div v-if="batchDone && lastBatchId && !processing" class="flex items-center space-x-2 pt-1">
+        <button @click="doExportInitExcel"
+          class="flex-1 py-1.5 rounded-lg text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 transition flex items-center justify-center space-x-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          <span>归档目录Excel</span>
+        </button>
+        <button @click="doExportExcel"
+          class="flex-1 py-1.5 rounded-lg text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 transition flex items-center justify-center space-x-1">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+          <span>本批识别Excel</span>
+        </button>
+      </div>
     </div>
+
   </div>
 </template>
 
 <script setup>
 import { ref, computed } from 'vue'
-import { uploadFile, scanFolder } from '../api/ocr.js'
+import { uploadFile, scanFolder, exportArchiveRecords } from '../api/ocr.js'
 
 const props = defineProps({ model: Object })
 
@@ -194,6 +209,8 @@ const outputDir = ref('')
 const scanning = ref(false)
 const scanMsg = ref('')
 const scanError = ref(false)
+const lastBatchId = ref('')
+const batchDone = ref(false)
 
 // pathQueue holds server-side file paths (strings) for folder import
 const pathQueue = ref([])
@@ -321,6 +338,10 @@ function formatSize(bytes) {
   return (bytes / 1048576).toFixed(1) + 'MB'
 }
 
+function genBatchId() {
+  return `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
 async function startBatch() {
   const total = queue.value.length + pathQueue.value.length
   if (!total || processing.value) return
@@ -336,7 +357,11 @@ async function startBatch() {
   }
 
   processing.value = true
+  batchDone.value = false
   doneCount.value = 0
+  const isMultiFileBatch = total > 1
+  const batchId = isMultiFileBatch ? genBatchId() : ''
+  lastBatchId.value = batchId
   const files = [...queue.value]
   const paths = [...pathQueue.value]
   totalCount.value = files.length + paths.length
@@ -356,6 +381,7 @@ async function startBatch() {
         excelPath: ep,
         excelInit: needExcelInit,
         outputDir: od,
+        batchId,
       })
       if (res.data?.id) lastId = res.data.id
       if (res.data?.excel_path) lastExcelPath = res.data.excel_path
@@ -367,15 +393,16 @@ async function startBatch() {
     doneCount.value = ++done
   }
 
-  // Process server-side path files (with optional Excel auto-export and output dir)
+  // Process server-side path files
   for (const pf of paths) {
     try {
-      const { default: axios } = await import('axios')
-      let url = `/api/ocr/upload-from-path?mode=${props.model.mode}`
-      if (ep) url += `&excel_path=${encodeURIComponent(ep)}`
-      if (ep && needExcelInit) url += `&excel_init=1`
-      if (od) url += `&output_dir=${encodeURIComponent(od)}`
-      const res = await axios.post(url, { file_path: pf.path })
+      const { uploadFromPath: _uploadFromPath } = await import('../api/ocr.js')
+      const res = await _uploadFromPath(pf.path, props.model.mode, {
+        excelPath: ep,
+        excelInit: needExcelInit,
+        outputDir: od,
+        batchId,
+      })
       if (res.data?.id) lastId = res.data.id
       if (res.data?.excel_path) lastExcelPath = res.data.excel_path
       if (ep && res.data?.excel_exported === false) excelFailed = true
@@ -396,12 +423,28 @@ async function startBatch() {
     }
   }
 
-  if (lastId) emit('view-result', lastId)
+  if (isMultiFileBatch) {
+    exportArchiveRecords({ batch_id: 'init_import', filename: '归档目录.xlsx' })
+    await new Promise(r => setTimeout(r, 600))
+    exportArchiveRecords({ batch_id: batchId, filename: '本批识别.xlsx' })
+  }
 
   processing.value = false
+  batchDone.value = isMultiFileBatch
   queue.value = []
   pathQueue.value = []
   scheduledTime.value = ''
   emit('start-batch')
+
+  if (lastId) emit('view-result', lastId)
 }
+
+function doExportExcel() {
+  exportArchiveRecords({ batch_id: lastBatchId.value })
+}
+
+function doExportInitExcel() {
+  exportArchiveRecords({ batch_id: 'init_import' })
+}
+
 </script>

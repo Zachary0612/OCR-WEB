@@ -334,15 +334,16 @@ const allRegions = computed(() => {
       result.push({ _pageSep: true, _pageNum: pi + 1 })
     }
     if (page?.regions?.length) {
-      page.regions.forEach(r => result.push({ ...r, _pageIdx: pi }))
+      page.regions.forEach((r, ri) => result.push({ ...r, _pageIdx: pi, _regionIdx: ri }))
     } else if (page?.lines?.length) {
-      page.lines.forEach(l => result.push({
+      page.lines.forEach((l, li) => result.push({
         type: 'text',
         content: l.text || '',
         bbox: l.bbox || [],
         bbox_type: Array.isArray(l.bbox?.[0]) ? 'poly' : 'rect',
         confidence: l.confidence,
         _pageIdx: pi,
+        _lineIdx: li,
       }))
     }
   })
@@ -392,7 +393,7 @@ function showToast(msg) {
 }
 
 function copyRegion(i) {
-  const r = currentRegions.value[i]
+  const r = allRegions.value[i]
   const text = r?.content || r?.html || ''
   navigator.clipboard.writeText(text).then(() => showToast('已复制'))
 }
@@ -413,11 +414,11 @@ function downloadTxt() {
 
 function startEdit(i) {
   editingIdx.value = i
-  editText.value = currentRegions.value[i]?.content || ''
+  editText.value = allRegions.value[i]?.content || ''
 }
 
 function startTableEdit(i) {
-  const r = currentRegions.value[i]
+  const r = allRegions.value[i]
   if (!r?.html) return
   editingTableIdx.value = i
   tableBackupHtml.value = r.html
@@ -425,9 +426,15 @@ function startTableEdit(i) {
 
 function cancelTableEdit() {
   const i = editingTableIdx.value
-  if (i >= 0 && tableRefs.value[i]) {
-    const r = currentRegions.value[i]
-    tableRefs.value[i].innerHTML = tableBackupHtml.value
+  if (i >= 0) {
+    const r = allRegions.value[i]
+    if (r && r._pageIdx !== undefined && r._regionIdx !== undefined) {
+      const page = resultData.value.pages[r._pageIdx]
+      if (page?.regions?.[r._regionIdx] !== undefined) {
+        page.regions[r._regionIdx].html = tableBackupHtml.value
+      }
+    }
+    if (tableRefs.value[i]) tableRefs.value[i].innerHTML = tableBackupHtml.value
   }
   editingTableIdx.value = -1
   tableBackupHtml.value = ''
@@ -438,18 +445,20 @@ async function saveTableEdit(i) {
   const el = tableRefs.value[i]
   if (!el) return
   const newHtml = el.innerHTML
-  const regions = currentRegions.value
-  if (regions[i]) {
-    regions[i].html = newHtml
-    // Also update content with text from table cells
-    const tmp = document.createElement('div')
-    tmp.innerHTML = newHtml
-    regions[i].content = tmp.textContent || ''
+  const r = allRegions.value[i]
+  if (r && !r._pageSep && r._pageIdx !== undefined && r._regionIdx !== undefined) {
+    const page = resultData.value.pages[r._pageIdx]
+    if (page?.regions?.[r._regionIdx] !== undefined) {
+      const tmp = document.createElement('div')
+      tmp.innerHTML = newHtml
+      page.regions[r._regionIdx].html = newHtml
+      page.regions[r._regionIdx].content = tmp.textContent || ''
+    }
     try {
       const pages = resultData.value.pages
       await axios.put(`/api/ocr/tasks/${props.id}`, {
         result_json: pages,
-        full_text: pages.flatMap(p => (p.regions||[]).map(r => r.content||'')).join('\n')
+        full_text: pages.flatMap(p => (p.regions||[]).map(rr => rr.content||'')).join('\n')
       })
       showToast('表格已保存')
     } catch (e) {
@@ -462,15 +471,22 @@ async function saveTableEdit(i) {
 
 async function saveEdit(i) {
   if (editingIdx.value !== i) return
-  const regions = currentRegions.value
-  if (regions[i]) {
-    regions[i].content = editText.value
-    // Save to backend
+  const r = allRegions.value[i]
+  if (r && !r._pageSep) {
+    const page = resultData.value.pages[r._pageIdx]
+    if (r._regionIdx !== undefined && page?.regions?.[r._regionIdx] !== undefined) {
+      page.regions[r._regionIdx].content = editText.value
+    } else if (r._lineIdx !== undefined && page?.lines?.[r._lineIdx] !== undefined) {
+      page.lines[r._lineIdx].text = editText.value
+    }
     try {
       const pages = resultData.value.pages
       await axios.put(`/api/ocr/tasks/${props.id}`, {
         result_json: pages,
-        full_text: pages.flatMap(p => (p.regions||[]).map(r => r.content||'')).join('\n')
+        full_text: pages.flatMap(p => [
+          ...(p.regions||[]).map(rr => rr.content||''),
+          ...(p.lines||[]).map(ll => ll.text||''),
+        ]).join('\n')
       })
       showToast('已保存修改')
     } catch (e) {

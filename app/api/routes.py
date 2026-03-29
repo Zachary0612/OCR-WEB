@@ -1,7 +1,9 @@
 import logging
+import os
 from pathlib import Path
 
 import json as _json
+from sqlalchemy import delete as sa_delete
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query, Form
 from fastapi.responses import PlainTextResponse, JSONResponse, FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,12 @@ from app.services.excel_export import (
     init_excel,
     resolve_excel_output_path,
     clear_excel_data,
+)
+from app.services.archive_service import (
+    save_archive_record,
+    get_archive_records,
+    records_to_excel,
+    import_from_excel,
 )
 from app.services.ocr_service import (
     save_upload_file,
@@ -92,12 +100,14 @@ async def upload_and_recognize(
     excel_path: str = Query("", description="可选：自动写入归档Excel的路径"),
     excel_init: int = Query(0, description="为1时先清空Excel数据行（批次第一个文件传入）"),
     output_dir: str = Query("", description="可选：识别结果输出目录，将生成 .json 和 .txt 文件"),
+    batch_id: str = Query("", description="批次标识，同一批次所有文件传相同值"),
     db: AsyncSession = Depends(get_db),
 ):
     """上传文件并执行 OCR 识别
     
     mode: layout=PP-StructureV3版面解析(含表格), ocr=PP-OCRv5基础识别(快速)
     """
+    body_batch_id = batch_id
     if not file.filename:
         raise HTTPException(status_code=400, detail="未提供文件")
 
@@ -119,6 +129,12 @@ async def upload_and_recognize(
         detail = await get_task_detail(db, task.id)
         result = OCRTaskDetail.model_validate(detail).model_dump(mode='json')
         result = _apply_post_exports(result, detail, Path(file.filename), excel_path, excel_init, output_dir)
+        try:
+            batch_id = body_batch_id or ""
+            fields = extract_fields(detail.filename, detail.full_text or "", detail.result_json, detail.page_count)
+            await save_archive_record(db, task.id, batch_id, str(Path(file_path).parent), fields)
+        except Exception as ex:
+            logger.warning("保存归档记录失败: %s", ex)
         cache_set(f"task:{detail.id}", result, TASK_TTL)
         invalidate_lists()
         return result
@@ -159,6 +175,7 @@ async def upload_from_path(
     excel_path: str = Query("", description="可选：自动写入归档Excel的路径"),
     excel_init: int = Query(0, description="为1时先清空Excel数据行（批次第一个文件传入）"),
     output_dir: str = Query("", description="可选：识别结果输出目录，将生成 .json 和 .txt 文件"),
+    batch_id: str = Query("", description="批次标识，同一批次所有文件传相同值"),
     db: AsyncSession = Depends(get_db),
 ):
     """从服务器本地路径直接识别文件（无需上传），可选自动写入归档Excel和结果目录"""
@@ -176,6 +193,11 @@ async def upload_from_path(
         detail = await get_task_detail(db, task.id)
         result = OCRTaskDetail.model_validate(detail).model_dump(mode='json')
         result = _apply_post_exports(result, detail, file_path, excel_path, excel_init, output_dir)
+        try:
+            fields = extract_fields(detail.filename, detail.full_text or "", detail.result_json, detail.page_count)
+            await save_archive_record(db, task.id, batch_id, str(file_path.parent), fields)
+        except Exception as ex:
+            logger.warning("保存归档记录失败: %s", ex)
         cache_set(f"task:{detail.id}", result, TASK_TTL)
         invalidate_lists()
 
@@ -184,6 +206,104 @@ async def upload_from_path(
         logger.exception("本地路径识别失败: %s", str(e))
         invalidate_lists()
         return {"error": str(e), "file_path": file_path_str, "status": "failed"}
+
+
+@router.get("/archive-records/export")
+async def export_archive_records(
+    folder: str = Query("", description="按文件夹过滤，空=全部"),
+    batch_id: str = Query("", description="按批次ID过滤"),
+    db: AsyncSession = Depends(get_db),
+):
+    """将归档记录导出为 Excel 文件下载"""
+    import tempfile
+    records, total = await get_archive_records(db, folder=folder, batch_id=batch_id, page=1, page_size=10000)
+    if not records:
+        raise HTTPException(status_code=404, detail="没有符合条件的归档记录")
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(tmp_fd)
+    try:
+        records_to_excel(list(records), tmp_path)
+        return FileResponse(
+            tmp_path,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename="归档文件目录.xlsx",
+        )
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise HTTPException(status_code=500, detail=f"导出失败: {e}")
+
+
+@router.get("/archive-records")
+async def list_archive_records(
+    folder: str = Query(""),
+    batch_id: str = Query(""),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+):
+    """查询归档记录列表"""
+    records, total = await get_archive_records(db, folder=folder, batch_id=batch_id, page=page, page_size=page_size)
+    return {
+        "total": total,
+        "records": [
+            {
+                "id": r.id,
+                "task_id": r.task_id,
+                "batch_id": r.batch_id,
+                "batch_folder": r.batch_folder,
+                "archive_no": r.archive_no,
+                "doc_no": r.doc_no,
+                "responsible": r.responsible,
+                "title": r.title,
+                "date": r.date,
+                "pages": r.pages,
+                "classification": r.classification,
+                "remarks": r.remarks,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in records
+        ],
+    }
+
+
+@router.post("/archive-records/import-excel")
+async def import_archive_from_excel(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """从本地 Excel 文件（.xlsx/.xls）导入归档记录到数据库"""
+    file_path = body.get("file_path", "")
+    batch_id = body.get("batch_id", "")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="请提供 file_path 字段")
+    try:
+        count = await import_from_excel(db, file_path, batch_id)
+        return {"imported": count, "file_path": file_path}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ValueError, ImportError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"导入失败: {e}")
+
+
+@router.delete("/archive-records")
+async def delete_archive_records(
+    folder: str = Query("", description="按文件夹删除，空=全部"),
+    batch_id: str = Query("", description="按批次ID删除"),
+    db: AsyncSession = Depends(get_db),
+):
+    """删除归档记录"""
+    from app.db.models import ArchiveRecord as AR
+    q = sa_delete(AR)
+    if folder:
+        q = q.where(AR.batch_folder == folder)
+    if batch_id:
+        q = q.where(AR.batch_id == batch_id)
+    result = await db.execute(q)
+    await db.commit()
+    return {"deleted": result.rowcount}
 
 
 @router.get("/tasks/search")
