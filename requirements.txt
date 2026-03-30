@@ -1,7 +1,8 @@
 # PaddlePaddle GPU (CUDA 12.x)
-paddlepaddle-gpu
+paddlepaddle-gpu>=3.2.1
 # PaddleOCR 3.0
 paddleocr>=3.0.0
+paddlex[ocr]>=3.4.3
 # Web framework
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0

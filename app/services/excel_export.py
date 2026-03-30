@@ -35,6 +35,30 @@ DOC_NO_PATTERNS = (
 DATE_PATTERN = re.compile(r'(\d{4})\s*(?:年|[./-])\s*(\d{1,2})\s*(?:月|[./-])\s*(\d{1,2})\s*日?')
 CLASSIFICATION_PATTERN = re.compile(r'(绝密|机密|秘密|内部|公开)')
 
+def _extract_archive_number(filename: str) -> str:
+    stem = Path(filename).stem.strip()
+    if not stem:
+        return ""
+
+    ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+(?:-\d+)+)$', stem, re.IGNORECASE)
+    if ws_match:
+        return ws_match.group(1)
+
+    kj_match = re.match(r'^(KJ(?:-[A-Za-z0-9]+){4,})$', stem, re.IGNORECASE)
+    if kj_match:
+        return kj_match.group(1)
+
+    legacy_ws_match = re.match(r'^(WS[·.]?\d{4}[·.]?[A-Z]\d+[-]\d+)$', stem, re.IGNORECASE)
+    if legacy_ws_match:
+        return legacy_ws_match.group(1)
+
+    if re.match(r'^(KJ[-].*)$', stem, re.IGNORECASE):
+        parts = stem.split('-')
+        if len(parts) >= 5:
+            return '-'.join(parts[:5])
+
+    return ""
+
 def _clean_line_text(text: str) -> str:
     clean = str(text or '').replace('\u3000', ' ').replace('\xa0', ' ')
     clean = re.sub(r'\s+', ' ', clean)
