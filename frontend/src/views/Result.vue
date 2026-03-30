@@ -199,9 +199,32 @@
               <!-- Table: rendered HTML (editable mode) -->
               <template v-else-if="r.type==='table' && r.html">
                 <!-- Table editing toolbar -->
-                <div v-if="editingTableIdx===i" class="flex items-center justify-end space-x-2 mb-2">
-                  <button @click.stop="cancelTableEdit" class="px-3 py-1 rounded text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 transition">取消</button>
-                  <button @click.stop="saveTableEdit(i)" class="px-3 py-1 rounded text-xs text-white bg-blue-600 hover:bg-blue-700 transition">保存</button>
+                <div v-if="editingTableIdx===i" class="mb-2 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-blue-100 bg-blue-50/60 px-2 py-1.5">
+                  <div class="flex flex-wrap items-center gap-1">
+                    <button
+                      v-for="action in tableCommandActions"
+                      :key="action.key"
+                      @mousedown.prevent="runTableCommand(action.command)"
+                      :title="action.title"
+                      class="min-w-7 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:border-blue-200 hover:text-blue-600"
+                    >
+                      <span :class="action.class || ''">{{ action.label }}</span>
+                    </button>
+                    <div class="mx-1 h-5 w-px bg-blue-100"></div>
+                    <button
+                      v-for="action in tableStructureActions"
+                      :key="action.key"
+                      @mousedown.prevent="handleTableStructure(action.action)"
+                      :title="action.title"
+                      class="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-600 transition hover:border-blue-200 hover:text-blue-600"
+                    >
+                      {{ action.label }}
+                    </button>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <button @click.stop="cancelTableEdit" class="px-3 py-1 rounded text-xs text-gray-600 bg-gray-100 hover:bg-gray-200 transition">取消</button>
+                    <button @click.stop="saveTableEdit(i)" class="px-3 py-1 rounded text-xs text-white bg-blue-600 hover:bg-blue-700 transition">保存</button>
+                  </div>
                 </div>
                 <div :ref="el => tableRefs[i] = el"
                   v-html="r.html"
@@ -212,7 +235,11 @@
                   [&_td]:border [&_td]:border-gray-300 [&_td]:px-3 [&_td]:py-1.5 [&_td]:text-gray-700
                   [&_th]:border [&_th]:border-gray-300 [&_th]:px-3 [&_th]:py-1.5 [&_th]:bg-gray-50 [&_th]:font-medium [&_th]:text-gray-800"
                   :style="editingTableIdx===i ? 'outline:none;' : ''"
-                  @dblclick.stop="startTableEdit(i)"></div>
+                  @dblclick.stop="startTableEdit(i)"
+                  @click.stop="handleTableEditorPointer(i, $event)"
+                  @focusin.stop="handleTableEditorPointer(i, $event)"
+                  @mouseup.stop="rememberTableSelection"
+                  @keyup.stop="rememberTableSelection"></div>
               </template>
 
               <!-- Normal text content -->
@@ -310,6 +337,8 @@ const editText = ref('')
 const editingTableIdx = ref(-1)
 const tableBackupHtml = ref('')
 const tableRefs = ref({})
+const activeTableCell = ref(null)
+const tableSelectionRange = ref(null)
 
 const TYPE_LABEL = {
   title:'标题', table:'表格', text:'文本', paragraph:'文本', other_text:'文本',
@@ -322,6 +351,23 @@ const TYPE_LABEL = {
   number:'编号', aside_text:'旁注', note:'备注', footnote:'脚注',
 }
 const TITLE_TYPES = new Set(['title','doc_title','paragraph_title','content_title','abstract_title','reference_title'])
+const tableCommandActions = [
+  { key: 'undo', label: '↶', title: '撤销', command: 'undo' },
+  { key: 'redo', label: '↷', title: '重做', command: 'redo' },
+  { key: 'bold', label: 'B', title: '加粗', command: 'bold', class: 'font-semibold' },
+  { key: 'italic', label: 'I', title: '斜体', command: 'italic', class: 'italic' },
+  { key: 'underline', label: 'U', title: '下划线', command: 'underline', class: 'underline' },
+  { key: 'strike', label: 'S', title: '删除线', command: 'strikeThrough', class: 'line-through' },
+  { key: 'left', label: '左', title: '左对齐', command: 'justifyLeft' },
+  { key: 'center', label: '中', title: '居中', command: 'justifyCenter' },
+  { key: 'right', label: '右', title: '右对齐', command: 'justifyRight' },
+]
+const tableStructureActions = [
+  { key: 'row-add', label: '+行', title: '在下方插入一行', action: 'insertRowBelow' },
+  { key: 'col-add', label: '+列', title: '在右侧插入一列', action: 'insertColumnRight' },
+  { key: 'row-del', label: '-行', title: '删除当前行', action: 'deleteRow' },
+  { key: 'col-del', label: '-列', title: '删除当前列', action: 'deleteColumn' },
+]
 
 const isPdf = computed(() => task.value?.filename?.toLowerCase().endsWith('.pdf'))
 const totalPages = computed(() => resultData.value?.pages?.length || 1)
@@ -420,8 +466,14 @@ function startEdit(i) {
 function startTableEdit(i) {
   const r = allRegions.value[i]
   if (!r?.html) return
+  resetTableEditorState()
   editingTableIdx.value = i
   tableBackupHtml.value = r.html
+  nextTick(() => {
+    const root = tableRefs.value[i]
+    root?.focus()
+    updateActiveTableCell(root?.querySelector('td,th') || null)
+  })
 }
 
 function cancelTableEdit() {
@@ -438,6 +490,7 @@ function cancelTableEdit() {
   }
   editingTableIdx.value = -1
   tableBackupHtml.value = ''
+  resetTableEditorState()
 }
 
 async function saveTableEdit(i) {
@@ -467,6 +520,7 @@ async function saveTableEdit(i) {
   }
   editingTableIdx.value = -1
   tableBackupHtml.value = ''
+  resetTableEditorState()
 }
 
 async function saveEdit(i) {
@@ -499,6 +553,9 @@ async function saveEdit(i) {
 watch(pageNum, () => {
   activeRegion.value = -1
   editingIdx.value = -1
+  editingTableIdx.value = -1
+  tableBackupHtml.value = ''
+  resetTableEditorState()
 })
 
 // Scroll right panel to active region
@@ -507,6 +564,170 @@ watch(activeRegion, (i) => {
     regionRefs.value[i].scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }
 })
+
+function getNodeElement(node) {
+  if (!node) return null
+  return node.nodeType === 1 ? node : node.parentElement
+}
+
+function getTableCellFromNode(node) {
+  let el = getNodeElement(node)
+  while (el) {
+    if (el.tagName === 'TD' || el.tagName === 'TH') return el
+    el = el.parentElement
+  }
+  return null
+}
+
+function getEditingTableRoot() {
+  if (editingTableIdx.value < 0) return null
+  return tableRefs.value[editingTableIdx.value] || null
+}
+
+function getEditingTableElement() {
+  return getEditingTableRoot()?.querySelector('table') || null
+}
+
+function updateActiveTableCell(cell) {
+  if (activeTableCell.value && activeTableCell.value !== cell) {
+    activeTableCell.value.classList.remove('table-cell-active')
+  }
+  activeTableCell.value = cell || null
+  if (activeTableCell.value) {
+    activeTableCell.value.classList.add('table-cell-active')
+  }
+}
+
+function resetTableEditorState() {
+  if (activeTableCell.value) {
+    activeTableCell.value.classList.remove('table-cell-active')
+  }
+  activeTableCell.value = null
+  tableSelectionRange.value = null
+}
+
+function rememberTableSelection() {
+  const root = getEditingTableRoot()
+  const sel = window.getSelection?.()
+  if (!root || !sel || !sel.rangeCount) return
+  const range = sel.getRangeAt(0)
+  if (!root.contains(range.commonAncestorContainer)) return
+  tableSelectionRange.value = range.cloneRange()
+  updateActiveTableCell(getTableCellFromNode(sel.anchorNode))
+}
+
+function restoreTableSelection() {
+  const sel = window.getSelection?.()
+  if (!sel || !tableSelectionRange.value) return
+  sel.removeAllRanges()
+  sel.addRange(tableSelectionRange.value)
+}
+
+function focusTableCell(cell) {
+  if (!cell) return
+  const range = document.createRange()
+  range.selectNodeContents(cell)
+  range.collapse(false)
+  const sel = window.getSelection?.()
+  if (!sel) return
+  sel.removeAllRanges()
+  sel.addRange(range)
+  updateActiveTableCell(cell)
+  tableSelectionRange.value = range.cloneRange()
+}
+
+function getActiveTableCell() {
+  const root = getEditingTableRoot()
+  if (!root) return null
+  if (activeTableCell.value && root.contains(activeTableCell.value)) {
+    return activeTableCell.value
+  }
+  const sel = window.getSelection?.()
+  const selectionCell = sel ? getTableCellFromNode(sel.anchorNode) : null
+  if (selectionCell && root.contains(selectionCell)) {
+    updateActiveTableCell(selectionCell)
+    return selectionCell
+  }
+  const fallbackCell = root.querySelector('td,th')
+  updateActiveTableCell(fallbackCell)
+  return fallbackCell
+}
+
+function handleTableEditorPointer(i, event) {
+  if (editingTableIdx.value !== i) return
+  updateActiveTableCell(getTableCellFromNode(event.target))
+  rememberTableSelection()
+}
+
+function runTableCommand(command) {
+  if (editingTableIdx.value < 0) return
+  restoreTableSelection()
+  document.execCommand(command, false, null)
+  rememberTableSelection()
+}
+
+function insertTableRowBelow() {
+  const cell = getActiveTableCell()
+  const row = cell?.parentElement
+  if (!row) return
+  const newRow = row.cloneNode(true)
+  Array.from(newRow.cells).forEach((item) => {
+    item.innerHTML = ''
+  })
+  row.insertAdjacentElement('afterend', newRow)
+  focusTableCell(newRow.cells[Math.min(cell.cellIndex, newRow.cells.length - 1)] || newRow.cells[0])
+}
+
+function insertTableColumnRight() {
+  const table = getEditingTableElement()
+  const cell = getActiveTableCell()
+  if (!table || !cell) return
+  const colIndex = cell.cellIndex
+  Array.from(table.rows).forEach((row) => {
+    const baseCell = row.cells[Math.min(colIndex, row.cells.length - 1)]
+    const newCell = document.createElement(baseCell?.tagName || 'TD')
+    newCell.innerHTML = ''
+    if (baseCell) {
+      baseCell.insertAdjacentElement('afterend', newCell)
+    } else {
+      row.appendChild(newCell)
+    }
+  })
+  const targetRow = table.rows[cell.parentElement.rowIndex]
+  focusTableCell(targetRow?.cells[Math.min(colIndex + 1, targetRow.cells.length - 1)] || null)
+}
+
+function deleteTableRow() {
+  const cell = getActiveTableCell()
+  const row = cell?.parentElement
+  const section = row?.parentElement
+  if (!row || !section || section.children.length <= 1) return
+  const nextRow = row.nextElementSibling || row.previousElementSibling
+  row.remove()
+  focusTableCell(nextRow?.cells[Math.min(cell.cellIndex, nextRow.cells.length - 1)] || null)
+}
+
+function deleteTableColumn() {
+  const table = getEditingTableElement()
+  const cell = getActiveTableCell()
+  if (!table || !cell) return
+  const firstRow = Array.from(table.rows).find((row) => row.cells.length)
+  if (!firstRow || firstRow.cells.length <= 1) return
+  const colIndex = cell.cellIndex
+  Array.from(table.rows).forEach((row) => {
+    if (row.cells[colIndex]) row.deleteCell(colIndex)
+  })
+  const targetRow = table.rows[Math.min(cell.parentElement.rowIndex, table.rows.length - 1)]
+  const nextIndex = Math.min(colIndex, (targetRow?.cells.length || 1) - 1)
+  focusTableCell(targetRow?.cells[nextIndex] || null)
+}
+
+function handleTableStructure(action) {
+  if (action === 'insertRowBelow') insertTableRowBelow()
+  if (action === 'insertColumnRight') insertTableColumnRight()
+  if (action === 'deleteRow') deleteTableRow()
+  if (action === 'deleteColumn') deleteTableColumn()
+}
 
 async function loadTask(id) {
   loading.value = true
@@ -517,6 +738,10 @@ async function loadTask(id) {
   imgW.value = 0; imgH.value = 0
   activeRegion.value = -1
   pageNum.value = 1
+  editingIdx.value = -1
+  editingTableIdx.value = -1
+  tableBackupHtml.value = ''
+  resetTableEditorState()
   try {
     const { data } = await getTask(id)
     task.value = data
@@ -554,4 +779,5 @@ watch(folderPath, () => {
 <style scoped>
 .fade-enter-active, .fade-leave-active { transition: opacity .3s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+.table-cell-active { outline: 2px solid rgba(59, 130, 246, .35); outline-offset: -2px; background: rgba(239, 246, 255, .9); }
 </style>

@@ -11,7 +11,7 @@ from paddleocr import PaddleOCR
 # 图片最大像素面积限制（长×宽），超过则等比缩放
 MAX_IMAGE_PIXELS = 2500 * 2500
 
-from config import OCR_LANG, UPLOAD_DIR
+from config import OCR_DEVICE, OCR_LANG, UPLOAD_DIR
 
 
 def _cv_imread(path: str):
@@ -39,13 +39,13 @@ def get_ocr() -> PaddleOCR:
     """获取 PP-OCRv5 基础 OCR 单例（快速文字识别，无版面分析）"""
     global _ocr_instance
     if _ocr_instance is None:
-        logger.info("正在初始化 PP-OCRv5 引擎 (lang=%s)...", OCR_LANG)
+        logger.info("正在初始化 PP-OCRv5 引擎 (lang=%s, device=%s)...", OCR_LANG, OCR_DEVICE)
         _ocr_instance = PaddleOCR(
             lang=OCR_LANG,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
             use_textline_orientation=True,
-            device="gpu:0",
+            device=OCR_DEVICE,
         )
         logger.info("PP-OCRv5 引擎初始化完成")
     return _ocr_instance
@@ -56,10 +56,10 @@ def get_layout_pipeline():
     global _layout_pipeline
     if _layout_pipeline is None:
         from paddlex import create_pipeline
-        logger.info("正在初始化 PP-StructureV3 版面解析管线...")
+        logger.info("正在初始化 PP-StructureV3 版面解析管线 (device=%s)...", OCR_DEVICE)
         _layout_pipeline = create_pipeline(
             pipeline="layout_parsing",
-            device="gpu:0",
+            device=OCR_DEVICE,
         )
         logger.info("PP-StructureV3 版面解析管线初始化完成")
     return _layout_pipeline
@@ -197,14 +197,14 @@ def get_vl_pipeline():
     if _vl_pipeline is None:
         import os
         from paddlex import create_pipeline
-        logger.info("正在初始化 PaddleOCR-VL-1.5 视觉语言模型管线...")
+        logger.info("正在初始化 PaddleOCR-VL-1.5 视觉语言模型管线 (device=%s)...", OCR_DEVICE)
         # VL 管线的 PP-DocLayoutV3 需要 JSON 格式模型，临时切换标志
         old_flag = os.environ.get("FLAGS_json_format_model")
         os.environ.pop("FLAGS_json_format_model", None)
         try:
             _vl_pipeline = create_pipeline(
                 pipeline="PaddleOCR-VL-1.5",
-                device="gpu:0",
+                device=OCR_DEVICE,
             )
             logger.info("PaddleOCR-VL-1.5 管线初始化完成")
         finally:

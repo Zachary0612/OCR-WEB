@@ -10,6 +10,8 @@ from typing import Any
 
 import redis
 
+from config import REDIS_URL
+
 logger = logging.getLogger(__name__)
 
 # Redis 连接
@@ -23,20 +25,18 @@ LIST_TTL = 30          # 列表 30秒（频繁变动）
 SEARCH_TTL = 120       # 搜索结果 2分钟
 
 
-def get_redis() -> redis.Redis:
+def get_redis() -> redis.Redis | None:
     """获取 Redis 连接（单例）"""
     global _redis_client
     if _redis_client is None:
         try:
-            _redis_client = redis.Redis(
-                host="127.0.0.1",
-                port=6379,
-                db=0,
+            _redis_client = redis.from_url(
+                REDIS_URL,
                 decode_responses=True,
                 socket_connect_timeout=2,
             )
             _redis_client.ping()
-            logger.info("Redis 连接成功")
+            logger.info("Redis 连接成功: %s", REDIS_URL)
         except Exception as e:
             logger.warning("Redis 连接失败，将不使用缓存: %s", e)
             _redis_client = None

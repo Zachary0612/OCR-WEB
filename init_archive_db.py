@@ -3,14 +3,18 @@
 运行方式：D:\OCR\.venv\Scripts\python.exe init_archive_db.py
 """
 import asyncio
+import os
 import sys
 from pathlib import Path
 
 # 确保项目根目录在 Python 路径中
 sys.path.insert(0, str(Path(__file__).parent))
 
-EXCEL_PATH = r"D:\GOOLGE\软件著录\归档文件目录（所需字段）.xls"
-BATCH_ID = "init_import"   # 标记为初始导入批次
+EXCEL_PATH = sys.argv[1] if len(sys.argv) > 1 else os.getenv(
+    "INIT_ARCHIVE_EXCEL_PATH",
+    r"D:\GOOLGE\软件著录\归档文件目录（所需字段）.xls"
+)
+BATCH_ID = os.getenv("INIT_ARCHIVE_BATCH_ID", "init_import")
 
 
 async def main():
