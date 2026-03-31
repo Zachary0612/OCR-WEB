@@ -306,6 +306,166 @@ def _canonical_region_type(label: Any, has_table_payload: bool = False) -> str:
     return lowered or "text"
 
 
+def _compact_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or ""))
+
+
+def _line_rect(line: dict) -> list[float]:
+    bbox = line.get("bbox") or []
+    if bbox and isinstance(bbox[0], list):
+        return _rect_from_polys([bbox])
+    if len(bbox) >= 4:
+        return [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+    return []
+
+
+def _line_center(poly: list[list[float]]) -> tuple[float, float]:
+    if not poly:
+        return 0.0, 0.0
+    return (
+        sum(point[0] for point in poly) / len(poly),
+        sum(point[1] for point in poly) / len(poly),
+    )
+
+
+def _normalize_seal_content(value: Any) -> str:
+    lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    joined = "\n".join(lines)
+    if len(lines) > 4:
+        return ""
+    if len(joined) > 48 and re.search(r"[，。；、]", joined):
+        return ""
+    return joined
+
+
+def _seal_content_from_lines(layout_bbox: list[float], page_lines: list[dict], raw_content: str = "") -> str:
+    if len(layout_bbox) < 4 or not page_lines:
+        return _normalize_seal_content(raw_content)
+
+    candidates = []
+    for line in page_lines:
+        text = str(line.get("text") or "").strip()
+        poly = line.get("bbox") or []
+        if not text or not poly or not isinstance(poly[0], list):
+            continue
+        line_rect = _line_rect(line)
+        if len(line_rect) < 4:
+            continue
+        cx, cy = _line_center(poly)
+        overlap_ratio = _rect_intersection_area(layout_bbox, line_rect) / (_rect_area(line_rect) or 1.0)
+        if _rect_contains_point(layout_bbox, cx, cy) or overlap_ratio >= 0.55:
+            candidates.append((text, overlap_ratio))
+
+    if not candidates:
+        return _normalize_seal_content(raw_content)
+
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    seen = set()
+    selected = []
+    for text, _ in candidates:
+        normalized = _compact_text(text)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        if len(normalized) > 24 and re.search(r"[，。；、]", text):
+            continue
+        selected.append(text)
+        if len(selected) >= 4:
+            break
+
+    return "\n".join(selected) if selected else _normalize_seal_content(raw_content)
+
+
+def _region_rect(region: dict) -> list[float]:
+    layout_bbox = region.get("layout_bbox") or []
+    if len(layout_bbox) >= 4:
+        return [float(layout_bbox[0]), float(layout_bbox[1]), float(layout_bbox[2]), float(layout_bbox[3])]
+    bbox = region.get("bbox") or []
+    if bbox and isinstance(bbox[0], list):
+        return _rect_from_polys([bbox])
+    if len(bbox) >= 4:
+        return [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+    return []
+
+
+def _overlap_on_smaller(a: list[float], b: list[float]) -> float:
+    denominator = min(_rect_area(a), _rect_area(b))
+    if denominator <= 0:
+        return 0.0
+    return _rect_intersection_area(a, b) / denominator
+
+
+def _filter_output_regions(regions: list[dict]) -> list[dict]:
+    if not regions:
+        return regions
+
+    kept = []
+    kept_tables: list[dict[str, Any]] = []
+    for region in regions:
+        region_type = str(region.get("type") or "text")
+        region_rect = _region_rect(region)
+        region_text = _compact_text(region.get("content"))
+
+        if region_type == "table":
+            duplicated = any(
+                _overlap_on_smaller(region_rect, table["rect"]) >= 0.82
+                and (
+                    not region_text
+                    or not table["text"]
+                    or region_text in table["text"]
+                    or table["text"] in region_text
+                )
+                for table in kept_tables
+            )
+            if duplicated:
+                continue
+            kept.append(region)
+            kept_tables.append({"rect": region_rect, "text": region_text})
+            continue
+
+        if region_type in {"text", "paragraph", "number"} and region_text:
+            covered_by_table = any(
+                _overlap_on_smaller(region_rect, table["rect"]) >= 0.88
+                and (not table["text"] or region_text in table["text"])
+                for table in kept_tables
+            )
+            if covered_by_table:
+                continue
+
+        kept.append(region)
+
+    return kept
+
+
+def _extract_page_lines(res, line_num_start: int = 0) -> tuple[list[dict], int]:
+    page_lines = []
+    line_num = line_num_start
+    try:
+        ocr_res = _item_value(res, "overall_ocr_res") or {}
+        rec_texts = _item_value(ocr_res, "rec_texts") or []
+        rec_scores = _item_value(ocr_res, "rec_scores") or []
+        dt_polys = _item_value(ocr_res, "dt_polys") or []
+
+        for idx in range(len(rec_texts)):
+            text = rec_texts[idx]
+            confidence = float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
+            bbox = _poly_to_list(dt_polys[idx]) if idx < len(dt_polys) else []
+            line_num += 1
+            page_lines.append(
+                {
+                    "line_num": line_num,
+                    "text": text,
+                    "confidence": round(confidence, 4),
+                    "bbox": bbox,
+                }
+            )
+    except Exception as exc:
+        logger.warning("提取 OCR 行数据失败: %s", exc)
+    return page_lines, line_num
+
+
 def _predict_structured(pipeline, image_path: str):
     kwargs = {
         "use_doc_orientation_classify": True,
@@ -484,28 +644,8 @@ def ocr_image_with_layout(image_path: str) -> dict:
     line_num = 0
 
     for res in results:
-        page_lines = []
-        try:
-            ocr_res = _item_value(res, "overall_ocr_res") or {}
-            rec_texts = _item_value(ocr_res, "rec_texts") or []
-            rec_scores = _item_value(ocr_res, "rec_scores") or []
-            dt_polys = _item_value(ocr_res, "dt_polys") or []
-
-            for idx in range(len(rec_texts)):
-                text = rec_texts[idx]
-                confidence = float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
-                bbox = _poly_to_list(dt_polys[idx]) if idx < len(dt_polys) else []
-                line_num += 1
-                line = {
-                    "line_num": line_num,
-                    "text": text,
-                    "confidence": round(confidence, 4),
-                    "bbox": bbox,
-                }
-                page_lines.append(line)
-                lines.append(line)
-        except Exception as e:
-            logger.warning("提取 OCR 行数据失败: %s", e)
+        page_lines, line_num = _extract_page_lines(res, line_num)
+        lines.extend(page_lines)
 
         parsing_list = _item_value(res, "parsing_res_list") or []
         for item in parsing_list:
@@ -516,6 +656,8 @@ def ocr_image_with_layout(image_path: str) -> dict:
             content = str(_item_value(item, "block_content", "content") or "")
             table_data, table_html, content = _extract_table_payload(item, str(raw_label), content)
             label = _canonical_region_type(raw_label, has_table_payload=table_data is not None or bool(table_html))
+            if label == "seal":
+                content = _seal_content_from_lines(layout_bbox, page_lines, raw_content=content)
 
             if poly_pts:
                 precise_bbox, bbox_type = poly_pts, "poly"
@@ -535,7 +677,7 @@ def ocr_image_with_layout(image_path: str) -> dict:
                 region["table_data"] = table_data
             regions.append(region)
 
-    return {"regions": regions, "lines": lines}
+    return {"regions": _filter_output_regions(regions), "lines": lines}
 
 
 # ===== PaddleOCR-VL-1.5 视觉语言模型识别 =====
@@ -548,7 +690,9 @@ def ocr_image_with_vl(image_path: str) -> dict:
     results = _predict_structured(pipeline, image_path)
 
     regions = []
+    line_num = 0
     for res in results:
+        page_lines, line_num = _extract_page_lines(res, line_num)
         parsing_list = _item_value(res, "parsing_res_list") or []
         for item in parsing_list:
             raw_label = _item_value(item, "label", "block_label") or "text"
@@ -558,6 +702,8 @@ def ocr_image_with_vl(image_path: str) -> dict:
             bbox, poly_pts = _coerce_layout_bbox(bbox_raw, poly_pts)
             table_data, table_html, content = _extract_table_payload(item, str(raw_label), content)
             label = _canonical_region_type(raw_label, has_table_payload=table_data is not None or bool(table_html))
+            if label == "seal":
+                content = _seal_content_from_lines(bbox, page_lines, raw_content=content)
 
             bbox_type = "rect"
             final_bbox = bbox
@@ -578,7 +724,7 @@ def ocr_image_with_vl(image_path: str) -> dict:
                 region["table_data"] = table_data
             regions.append(region)
 
-    return {"regions": regions, "lines": []}
+    return {"regions": _filter_output_regions(regions), "lines": []}
 
 
 # ===== PDF 转图片 =====

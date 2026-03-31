@@ -118,7 +118,10 @@
         </div>
 
         <div v-if="activeTab === 'parsed'" class="flex-1 overflow-y-auto px-5 py-4">
-          <div v-if="!allItems.length" class="flex h-full items-center justify-center text-sm text-gray-400">暂无识别内容。</div>
+          <div v-if="task?.status === 'failed'" class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-600">
+            {{ task?.error_message || '识别失败，当前任务没有可展示结果。' }}
+          </div>
+          <div v-else-if="!allItems.length" class="flex h-full items-center justify-center text-sm text-gray-400">暂无识别内容。</div>
           <div v-else class="space-y-2">
             <template v-for="item in allItems" :key="item._key">
               <div v-if="item._pageSeparator" class="flex items-center space-x-3 py-2">
@@ -325,12 +328,13 @@ const { polling, start: startPolling, stop: stopPolling } = useTaskPolling(
 
 function buildPageItems(page, pageIndex) {
   if (page?.regions?.length) {
-    return page.regions.map((region, regionIndex) => {
+    return filterDisplayRegions(page.regions).map((region, regionIndex) => {
       const html = resolveTableHtml(region)
       const tableData = region.type === 'table' ? resolveTableData(region, html) : (Array.isArray(region.table_data) ? region.table_data : [['']])
+      const regionContent = region.type === 'seal' ? normalizeSealDisplayContent(region.content) : (region.content || '')
       const content = region.type === 'table'
-        ? (hasTableContent(tableData) ? tableDataToText(tableData) : (region.content || ''))
-        : (region.content || '')
+        ? (hasTableContent(tableData) ? tableDataToText(tableData) : regionContent)
+        : regionContent
 
       return {
         ...region,
@@ -384,6 +388,95 @@ function resolveTableData(region, html = '') {
   }
 
   return [['']]
+}
+
+function compactText(value) {
+  return String(value || '').replace(/\s+/g, '')
+}
+
+function rectArea(rect) {
+  return Array.isArray(rect) && rect.length >= 4
+    ? Math.max(0, (Number(rect[2]) || 0) - (Number(rect[0]) || 0)) * Math.max(0, (Number(rect[3]) || 0) - (Number(rect[1]) || 0))
+    : 0
+}
+
+function intersectionArea(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length < 4 || b.length < 4) return 0
+  const x1 = Math.max(Number(a[0]) || 0, Number(b[0]) || 0)
+  const y1 = Math.max(Number(a[1]) || 0, Number(b[1]) || 0)
+  const x2 = Math.min(Number(a[2]) || 0, Number(b[2]) || 0)
+  const y2 = Math.min(Number(a[3]) || 0, Number(b[3]) || 0)
+  return Math.max(0, x2 - x1) * Math.max(0, y2 - y1)
+}
+
+function overlapOnSmaller(a, b) {
+  const denominator = Math.min(rectArea(a), rectArea(b))
+  if (!denominator) return 0
+  return intersectionArea(a, b) / denominator
+}
+
+function regionDisplayRect(region) {
+  if (Array.isArray(region?.layout_bbox) && region.layout_bbox.length >= 4) {
+    return region.layout_bbox.slice(0, 4).map((value) => Number(value) || 0)
+  }
+  return rectFromBBox(region?.bbox || [])
+}
+
+function normalizeSealDisplayContent(content) {
+  const lines = String(content || '')
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (!lines.length) return ''
+
+  const joined = lines.join('\n')
+  if (lines.length > 4) return ''
+  if (joined.length > 48 && /[，。；、]/.test(joined)) return ''
+  return joined
+}
+
+function filterDisplayRegions(regions) {
+  if (!Array.isArray(regions) || !regions.length) return []
+
+  const kept = []
+  const keptTables = []
+
+  for (const region of regions) {
+    const type = String(region?.type || 'text')
+    const rect = regionDisplayRect(region)
+    const regionText = compactText(type === 'seal' ? normalizeSealDisplayContent(region?.content) : region?.content)
+
+    if (type === 'table') {
+      const html = resolveTableHtml(region)
+      const tableData = resolveTableData(region, html)
+      const tableText = compactText(hasTableContent(tableData) ? tableDataToText(tableData) : (region?.content || html))
+      const duplicated = keptTables.some((table) => {
+        if (overlapOnSmaller(rect, table.rect) < 0.82) return false
+        if (!tableText || !table.text) return true
+        return tableText.includes(table.text) || table.text.includes(tableText)
+      })
+
+      if (duplicated) continue
+
+      kept.push(region)
+      keptTables.push({ rect, text: tableText })
+      continue
+    }
+
+    if (['text', 'paragraph', 'number'].includes(type) && regionText) {
+      const coveredByTable = keptTables.some((table) => {
+        if (overlapOnSmaller(rect, table.rect) < 0.88) return false
+        return !table.text || table.text.includes(regionText)
+      })
+
+      if (coveredByTable) continue
+    }
+
+    kept.push(region)
+  }
+
+  return kept
 }
 
 function rectFromBBox(bbox) {
