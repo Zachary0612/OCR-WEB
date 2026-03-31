@@ -2,26 +2,45 @@ import logging
 import tempfile
 from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Any
 
-import cv2
-import numpy as np
-import fitz  # PyMuPDF
-from paddleocr import PaddleOCR
+try:
+    import cv2
+except ImportError:  # pragma: no cover - environment dependent
+    cv2 = None
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - environment dependent
+    np = None
+
+try:
+    from paddleocr import PaddleOCR
+except ImportError:  # pragma: no cover - environment dependent
+    PaddleOCR = Any
+
+try:
+    import fitz  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - environment dependent
+    fitz = None
 
 # 图片最大像素面积限制（长×宽），超过则等比缩放
 MAX_IMAGE_PIXELS = 2500 * 2500
+STRUCTURED_MAX_IMAGE_PIXELS = 5000 * 5000
 
 from config import OCR_DEVICE, OCR_LANG, UPLOAD_DIR
 
 
 def _cv_imread(path: str):
     """读取图片（支持中文路径）"""
+    _require_cv_stack()
     data = np.fromfile(path, dtype=np.uint8)
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
 def _cv_imwrite(path: str, img):
     """保存图片（支持中文路径）"""
+    _require_cv_stack()
     ext = Path(path).suffix or '.jpg'
     ok, buf = cv2.imencode(ext, img)
     if ok:
@@ -30,22 +49,44 @@ def _cv_imwrite(path: str, img):
 logger = logging.getLogger(__name__)
 
 # ===== 多模型管理 =====
-_ocr_instance: PaddleOCR | None = None
+_ocr_instance = None
 _layout_pipeline = None
 _vl_pipeline = None
+
+
+def _require_fitz():
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is required to process PDF files. Install PyMuPDF>=1.24.0.")
+    return fitz
+
+
+def _require_cv_stack():
+    if cv2 is None or np is None:
+        raise RuntimeError("OpenCV and NumPy are required to process images.")
+
+
+def _require_paddleocr():
+    if PaddleOCR is Any:
+        raise RuntimeError("paddleocr is required to run OCR. Install paddleocr>=3.0.0.")
 
 
 def get_ocr() -> PaddleOCR:
     """获取 PP-OCRv5 基础 OCR 单例（快速文字识别，无版面分析）"""
     global _ocr_instance
     if _ocr_instance is None:
+        _require_paddleocr()
         logger.info("正在初始化 PP-OCRv5 引擎 (lang=%s, device=%s)...", OCR_LANG, OCR_DEVICE)
+        # PP-OCRv5 server 模型在 PaddlePaddle 3.3.0 CPU 下有 PIR/oneDNN Bug
+        # 当 device=cpu 时改用 mobile 模型，避免 ConvertPirAttribute2RuntimeAttribute 报错
+        use_mobile = (OCR_DEVICE == "cpu")
         _ocr_instance = PaddleOCR(
             lang=OCR_LANG,
             use_doc_orientation_classify=False,
             use_doc_unwarping=False,
-            use_textline_orientation=True,
+            use_textline_orientation=False,
             device=OCR_DEVICE,
+            text_detection_model_name="PP-OCRv5_mobile_det" if use_mobile else None,
+            text_recognition_model_name="PP-OCRv5_mobile_rec" if use_mobile else None,
         )
         logger.info("PP-OCRv5 引擎初始化完成")
     return _ocr_instance
@@ -65,18 +106,20 @@ def get_layout_pipeline():
     return _layout_pipeline
 
 
-def _maybe_resize_image(image_path: str) -> str:
+def _maybe_resize_image(image_path: str, max_pixels: int | None = MAX_IMAGE_PIXELS) -> str:
     """如果图片过大，等比缩放后保存到临时文件，返回新路径；否则返回原路径"""
     try:
+        if not max_pixels or max_pixels <= 0:
+            return image_path
         img = _cv_imread(image_path)
         if img is None:
             return image_path
         h, w = img.shape[:2]
         pixels = h * w
-        if pixels <= MAX_IMAGE_PIXELS:
+        if pixels <= max_pixels:
             del img
             return image_path
-        scale = (MAX_IMAGE_PIXELS / pixels) ** 0.5
+        scale = (max_pixels / pixels) ** 0.5
         new_w = int(w * scale)
         new_h = int(h * scale)
         logger.info("缩放大图: %s (%dx%d -> %dx%d, %.0f%%)", Path(image_path).name, w, h, new_w, new_h, scale * 100)
@@ -99,6 +142,14 @@ def _poly_to_list(poly) -> list[list[float]]:
     if not poly or not isinstance(poly[0], (list, tuple)) or len(poly[0]) < 2:
         return []
     return [[float(p[0]), float(p[1])] for p in poly]
+
+
+def _item_polygon_points(item, attr_name: str = "polygon_points", dict_key: str = "block_polygon_points") -> list[list[float]]:
+    if hasattr(item, attr_name):
+        return _poly_to_list(getattr(item, attr_name))
+    if isinstance(item, dict):
+        return _poly_to_list(item.get(dict_key))
+    return []
 
 
 def _rect_contains_point(rect: list[float], x: float, y: float) -> bool:
@@ -285,13 +336,17 @@ def ocr_image_with_layout(image_path: str) -> dict:
         parsing_list = res.get("parsing_res_list", [])
         for item in parsing_list:
             bbox_raw = item.get("block_bbox", [])
+            poly_pts = _item_polygon_points(item, dict_key="block_polygon_points")
             label = item.get("block_label", "text")
             content = item.get("block_content", "")
 
             if hasattr(bbox_raw, 'tolist'):
                 bbox_raw = bbox_raw.tolist()
             layout_bbox = [float(x) for x in bbox_raw[:4]] if len(bbox_raw) >= 4 else []
-            precise_bbox, bbox_type = _precise_region_bbox(label, layout_bbox, content, page_lines)
+            if poly_pts:
+                precise_bbox, bbox_type = poly_pts, "poly"
+            else:
+                precise_bbox, bbox_type = _precise_region_bbox(label, layout_bbox, content, page_lines)
 
             region = {
                 "type": label,
@@ -315,8 +370,8 @@ def ocr_image_with_vl(image_path: str) -> dict:
     pipeline = get_vl_pipeline()
     results = list(pipeline.predict(
         image_path,
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
+        use_doc_orientation_classify=True,
+        use_doc_unwarping=True,
     ))
 
     regions = []
@@ -326,11 +381,7 @@ def ocr_image_with_vl(image_path: str) -> dict:
             label = item.label if hasattr(item, 'label') else item.get("block_label", "text")
             content = item.content if hasattr(item, 'content') else item.get("block_content", "")
             bbox_raw = item.bbox if hasattr(item, 'bbox') else item.get("block_bbox", [])
-            poly_pts = None
-            if hasattr(item, 'polygon_points') and item.polygon_points is not None:
-                poly_pts = item.polygon_points
-            elif isinstance(item, dict) and item.get("block_polygon_points"):
-                poly_pts = item["block_polygon_points"]
+            poly_pts = _item_polygon_points(item, dict_key="block_polygon_points")
 
             if hasattr(bbox_raw, 'tolist'):
                 bbox_raw = bbox_raw.tolist()
@@ -338,14 +389,9 @@ def ocr_image_with_vl(image_path: str) -> dict:
 
             bbox_type = "rect"
             final_bbox = bbox
-            if poly_pts is not None:
-                try:
-                    pts = [[float(p[0]), float(p[1])] for p in poly_pts]
-                    if len(pts) >= 3:
-                        final_bbox = pts
-                        bbox_type = "poly"
-                except Exception:
-                    pass
+            if poly_pts:
+                final_bbox = poly_pts
+                bbox_type = "poly"
 
             region = {
                 "type": label,
@@ -363,13 +409,14 @@ def ocr_image_with_vl(image_path: str) -> dict:
 # ===== PDF 转图片 =====
 def pdf_to_images(pdf_path: str) -> list[str]:
     """将 PDF 转换为图片列表（保存到 uploads 目录避免中文路径问题）"""
-    doc = fitz.open(pdf_path)
+    fitz_module = _require_fitz()
+    doc = fitz_module.open(pdf_path)
     image_paths = []
     prefix = Path(pdf_path).stem[:8]  # 取文件名前8字符作为前缀
 
     for page_num in range(len(doc)):
         page = doc[page_num]
-        mat = fitz.Matrix(2, 2)  # 2x 分辨率
+        mat = fitz_module.Matrix(2, 2)  # 2x 分辨率
         pix = page.get_pixmap(matrix=mat)
         # 保存到 uploads 目录（纯 ASCII 路径）
         tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False, dir=str(UPLOAD_DIR),
@@ -406,19 +453,21 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
     else:
         recognize_fn = ocr_image_basic
 
+    max_pixels = MAX_IMAGE_PIXELS if mode == "ocr" else STRUCTURED_MAX_IMAGE_PIXELS
+
     try:
         if file_ext == ".pdf":
             image_paths = pdf_to_images(file_path)
             temp_images = image_paths
             for page_idx, img_path in enumerate(image_paths):
-                resized_path = _maybe_resize_image(img_path)
+                resized_path = _maybe_resize_image(img_path, max_pixels=max_pixels)
                 if resized_path != img_path:
                     temp_images.append(resized_path)
                 page_result = recognize_fn(resized_path)
                 page_result["page_num"] = page_idx + 1
                 pages.append(page_result)
         else:
-            resized_path = _maybe_resize_image(file_path)
+            resized_path = _maybe_resize_image(file_path, max_pixels=max_pixels)
             if resized_path != file_path:
                 temp_images.append(resized_path)
             page_result = recognize_fn(resized_path)
