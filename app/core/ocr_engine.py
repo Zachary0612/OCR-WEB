@@ -1,4 +1,5 @@
 import logging
+import re
 import tempfile
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - environment dependent
 MAX_IMAGE_PIXELS = 2500 * 2500
 STRUCTURED_MAX_IMAGE_PIXELS = 5000 * 5000
 
+from app.core.result_validation import normalize_table_data, table_data_to_text, table_html_to_data
 from config import OCR_DEVICE, OCR_LANG, UPLOAD_DIR
 
 
@@ -52,6 +54,7 @@ logger = logging.getLogger(__name__)
 _ocr_instance = None
 _layout_pipeline = None
 _vl_pipeline = None
+_UNSUPPORTED_PREDICT_ARG_RE = re.compile(r"unexpected keyword argument ['\"](?P<name>\w+)['\"]")
 
 
 def _require_fitz():
@@ -150,6 +153,181 @@ def _item_polygon_points(item, attr_name: str = "polygon_points", dict_key: str 
     if isinstance(item, dict):
         return _poly_to_list(item.get(dict_key))
     return []
+
+
+def _item_value(item, *names: str):
+    for name in names:
+        if hasattr(item, name):
+            value = getattr(item, name)
+            if value is not None:
+                return value
+        if isinstance(item, dict) and name in item:
+            value = item.get(name)
+            if value is not None:
+                return value
+    return None
+
+
+def _coerce_layout_bbox(bbox_raw, poly_pts: list[list[float]] | None = None) -> tuple[list[float], list[list[float]]]:
+    if hasattr(bbox_raw, "tolist"):
+        bbox_raw = bbox_raw.tolist()
+    poly = poly_pts or []
+    if isinstance(bbox_raw, list) and bbox_raw and isinstance(bbox_raw[0], (list, tuple)):
+        raw_poly = _poly_to_list(bbox_raw)
+        if raw_poly and not poly:
+            poly = raw_poly
+        return (_rect_from_polys([raw_poly]) if raw_poly else []), poly
+    if isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) >= 4:
+        return [float(x) for x in bbox_raw[:4]], poly
+    return [], poly
+
+
+def _looks_like_html_table(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = value.lower()
+    return "<table" in lowered or ("<tr" in lowered and ("<td" in lowered or "<th" in lowered))
+
+
+def _looks_like_markdown_table(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    pipe_lines = [line for line in lines if line.count("|") >= 2]
+    if len(pipe_lines) < 2:
+        return False
+    divider = pipe_lines[1].replace("|", "").replace(":", "").replace("-", "").replace(" ", "")
+    return divider == ""
+
+
+def _has_table_content(table_data: list[list[str]] | None) -> bool:
+    return bool(table_data) and any(str(cell).strip() for row in table_data for cell in row)
+
+
+def _normalize_table_payload(raw_table) -> list[list[str]] | None:
+    if raw_table is None:
+        return None
+    try:
+        table_data = normalize_table_data(raw_table)
+    except Exception:
+        return None
+    return table_data if _has_table_content(table_data) else None
+
+
+def _markdown_table_to_data(value: Any) -> list[list[str]] | None:
+    if not _looks_like_markdown_table(value):
+        return None
+    lines = [line.strip() for line in str(value).splitlines() if line.strip() and line.count("|") >= 1]
+    rows = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        divider = stripped.replace("|", "").replace(":", "").replace("-", "").replace(" ", "")
+        if index == 1 and divider == "":
+            continue
+        if stripped.startswith("|"):
+            stripped = stripped[1:]
+        if stripped.endswith("|"):
+            stripped = stripped[:-1]
+        rows.append([cell.strip() for cell in stripped.split("|")])
+    return _normalize_table_payload(rows)
+
+
+def _plain_text_table_to_data(value: Any) -> list[list[str]] | None:
+    if not isinstance(value, str):
+        return None
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+    rows = []
+    max_cols = 0
+    for line in lines:
+        if "\t" in line:
+            cells = [cell.strip() for cell in line.split("\t")]
+        else:
+            cells = [cell.strip() for cell in re.split(r"\s{2,}", line) if cell.strip()]
+        if len(cells) < 2:
+            return None
+        rows.append(cells)
+        max_cols = max(max_cols, len(cells))
+    padded_rows = [row + [""] * (max_cols - len(row)) for row in rows]
+    return _normalize_table_payload(padded_rows)
+
+
+def _extract_table_payload(item, label: str, content: str) -> tuple[list[list[str]] | None, str | None, str]:
+    raw_label = str(label or "").strip().lower()
+    table_data = _normalize_table_payload(_item_value(item, "table_data", "block_table_data", "cells"))
+    html = _item_value(item, "html", "block_html", "table_html")
+    markdown = _item_value(item, "markdown", "block_markdown", "table_markdown")
+
+    nested = _item_value(item, "res", "result", "block_result", "table_result")
+    if isinstance(nested, dict):
+        if table_data is None:
+            table_data = _normalize_table_payload(nested.get("table_data") or nested.get("cells"))
+        if html is None:
+            html = nested.get("html") or nested.get("table_html")
+        if markdown is None:
+            markdown = nested.get("markdown") or nested.get("table_markdown")
+
+    if table_data is None and isinstance(content, str):
+        if _looks_like_html_table(content):
+            html = content
+        elif _looks_like_markdown_table(content):
+            markdown = content
+        elif raw_label in {"table", "table_body"}:
+            table_data = _plain_text_table_to_data(content)
+
+    if table_data is None and isinstance(html, str) and _looks_like_html_table(html):
+        try:
+            table_data = _normalize_table_payload(table_html_to_data(html))
+        except Exception:
+            table_data = None
+
+    if table_data is None and isinstance(markdown, str) and markdown.strip():
+        table_data = _markdown_table_to_data(markdown)
+
+    table_content = str(content or "")
+    if table_data is not None:
+        table_content = table_data_to_text(table_data)
+    elif isinstance(markdown, str) and markdown.strip():
+        table_content = markdown.strip()
+
+    html_value = html.strip() if isinstance(html, str) and _looks_like_html_table(html) else None
+    return table_data, html_value, table_content
+
+
+def _canonical_region_type(label: Any, has_table_payload: bool = False) -> str:
+    lowered = str(label or "text").strip().lower()
+    if has_table_payload or lowered in {"table", "table_body"}:
+        return "table"
+    if "seal" in lowered or "stamp" in lowered:
+        return "seal"
+    return lowered or "text"
+
+
+def _predict_structured(pipeline, image_path: str):
+    kwargs = {
+        "use_doc_orientation_classify": True,
+        "use_doc_unwarping": True,
+        "use_table_recognition": True,
+        "use_seal_recognition": True,
+        "layout_shape_mode": "poly",
+        "layout_merge_bboxes_mode": "union",
+        "format_block_content": True,
+    }
+    while True:
+        try:
+            return list(pipeline.predict(image_path, **kwargs))
+        except TypeError as exc:
+            match = _UNSUPPORTED_PREDICT_ARG_RE.search(str(exc))
+            if not match:
+                raise
+            arg_name = match.group("name")
+            if arg_name not in kwargs:
+                raise
+            logger.warning("predict 参数 %s 当前不可用，自动回退。", arg_name)
+            kwargs.pop(arg_name)
 
 
 def _rect_contains_point(rect: list[float], x: float, y: float) -> bool:
@@ -299,11 +477,7 @@ def ocr_image_with_layout(image_path: str) -> dict:
     返回: {"regions": [...], "lines": [...]}
     """
     pipeline = get_layout_pipeline()
-    results = list(pipeline.predict(
-        image_path,
-        use_doc_orientation_classify=True,
-        use_doc_unwarping=True,
-    ))
+    results = _predict_structured(pipeline, image_path)
 
     regions = []
     lines = []
@@ -312,10 +486,10 @@ def ocr_image_with_layout(image_path: str) -> dict:
     for res in results:
         page_lines = []
         try:
-            ocr_res = res["overall_ocr_res"]
-            rec_texts = ocr_res.get("rec_texts", [])
-            rec_scores = ocr_res.get("rec_scores", [])
-            dt_polys = ocr_res.get("dt_polys", [])
+            ocr_res = _item_value(res, "overall_ocr_res") or {}
+            rec_texts = _item_value(ocr_res, "rec_texts") or []
+            rec_scores = _item_value(ocr_res, "rec_scores") or []
+            dt_polys = _item_value(ocr_res, "dt_polys") or []
 
             for idx in range(len(rec_texts)):
                 text = rec_texts[idx]
@@ -333,16 +507,16 @@ def ocr_image_with_layout(image_path: str) -> dict:
         except Exception as e:
             logger.warning("提取 OCR 行数据失败: %s", e)
 
-        parsing_list = res.get("parsing_res_list", [])
+        parsing_list = _item_value(res, "parsing_res_list") or []
         for item in parsing_list:
-            bbox_raw = item.get("block_bbox", [])
+            bbox_raw = _item_value(item, "block_bbox", "bbox") or []
             poly_pts = _item_polygon_points(item, dict_key="block_polygon_points")
-            label = item.get("block_label", "text")
-            content = item.get("block_content", "")
+            layout_bbox, poly_pts = _coerce_layout_bbox(bbox_raw, poly_pts)
+            raw_label = _item_value(item, "block_label", "label") or "text"
+            content = str(_item_value(item, "block_content", "content") or "")
+            table_data, table_html, content = _extract_table_payload(item, str(raw_label), content)
+            label = _canonical_region_type(raw_label, has_table_payload=table_data is not None or bool(table_html))
 
-            if hasattr(bbox_raw, 'tolist'):
-                bbox_raw = bbox_raw.tolist()
-            layout_bbox = [float(x) for x in bbox_raw[:4]] if len(bbox_raw) >= 4 else []
             if poly_pts:
                 precise_bbox, bbox_type = poly_pts, "poly"
             else:
@@ -354,8 +528,11 @@ def ocr_image_with_layout(image_path: str) -> dict:
                 "bbox_type": bbox_type,
                 "layout_bbox": layout_bbox,
                 "content": content,
-                "html": content if label == "table" else None,
             }
+            if table_html:
+                region["html"] = table_html
+            if table_data is not None:
+                region["table_data"] = table_data
             regions.append(region)
 
     return {"regions": regions, "lines": lines}
@@ -368,24 +545,19 @@ def ocr_image_with_vl(image_path: str) -> dict:
     返回: {"regions": [...], "lines": []}
     """
     pipeline = get_vl_pipeline()
-    results = list(pipeline.predict(
-        image_path,
-        use_doc_orientation_classify=True,
-        use_doc_unwarping=True,
-    ))
+    results = _predict_structured(pipeline, image_path)
 
     regions = []
     for res in results:
-        parsing_list = res.get("parsing_res_list", [])
+        parsing_list = _item_value(res, "parsing_res_list") or []
         for item in parsing_list:
-            label = item.label if hasattr(item, 'label') else item.get("block_label", "text")
-            content = item.content if hasattr(item, 'content') else item.get("block_content", "")
-            bbox_raw = item.bbox if hasattr(item, 'bbox') else item.get("block_bbox", [])
+            raw_label = _item_value(item, "label", "block_label") or "text"
+            content = str(_item_value(item, "content", "block_content") or "")
+            bbox_raw = _item_value(item, "bbox", "block_bbox") or []
             poly_pts = _item_polygon_points(item, dict_key="block_polygon_points")
-
-            if hasattr(bbox_raw, 'tolist'):
-                bbox_raw = bbox_raw.tolist()
-            bbox = [float(x) for x in bbox_raw[:4]] if len(bbox_raw) >= 4 else []
+            bbox, poly_pts = _coerce_layout_bbox(bbox_raw, poly_pts)
+            table_data, table_html, content = _extract_table_payload(item, str(raw_label), content)
+            label = _canonical_region_type(raw_label, has_table_payload=table_data is not None or bool(table_html))
 
             bbox_type = "rect"
             final_bbox = bbox
@@ -399,8 +571,11 @@ def ocr_image_with_vl(image_path: str) -> dict:
                 "bbox_type": bbox_type,
                 "layout_bbox": bbox,
                 "content": content,
-                "html": content if label == "table" else None,
             }
+            if table_html:
+                region["html"] = table_html
+            if table_data is not None:
+                region["table_data"] = table_data
             regions.append(region)
 
     return {"regions": regions, "lines": []}
