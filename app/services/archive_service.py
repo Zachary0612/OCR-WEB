@@ -1,17 +1,13 @@
-"""
-归档记录服务：保存 / 查询 / 导出 / 导入 archive_records 表
-"""
 import logging
-import tempfile
-import os
 from pathlib import Path
 
 import openpyxl
-from sqlalchemy import select, func, delete as sa_delete
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ArchiveRecord
-from app.services.excel_export import HEADERS, init_excel, append_to_excel
+from app.services.excel_export import append_to_excel, init_excel
+
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +19,10 @@ async def save_archive_record(
     batch_folder: str,
     fields: dict,
 ) -> ArchiveRecord:
-    """保存归档记录（按 task_id UPSERT；task_id 为 None 时直接插入）"""
     record: ArchiveRecord | None = None
     if task_id is not None:
-        res = await db.execute(
-            select(ArchiveRecord).where(ArchiveRecord.task_id == task_id)
-        )
-        record = res.scalar_one_or_none()
+        result = await db.execute(select(ArchiveRecord).where(ArchiveRecord.task_id == task_id))
+        record = result.scalar_one_or_none()
 
     if record is None:
         record = ArchiveRecord(task_id=task_id)
@@ -58,118 +51,118 @@ async def get_archive_records(
     page: int = 1,
     page_size: int = 200,
 ):
-    """查询归档记录列表，支持按 folder / batch_id 过滤"""
-    q = select(ArchiveRecord)
-    cnt_q = select(func.count()).select_from(ArchiveRecord)
+    query = select(ArchiveRecord)
+    count_query = select(func.count()).select_from(ArchiveRecord)
 
     if folder:
-        q = q.where(ArchiveRecord.batch_folder == folder)
-        cnt_q = cnt_q.where(ArchiveRecord.batch_folder == folder)
+        query = query.where(ArchiveRecord.batch_folder == folder)
+        count_query = count_query.where(ArchiveRecord.batch_folder == folder)
     if batch_id:
-        q = q.where(ArchiveRecord.batch_id == batch_id)
-        cnt_q = cnt_q.where(ArchiveRecord.batch_id == batch_id)
+        query = query.where(ArchiveRecord.batch_id == batch_id)
+        count_query = count_query.where(ArchiveRecord.batch_id == batch_id)
 
-    total = (await db.execute(cnt_q)).scalar() or 0
-    q = q.order_by(ArchiveRecord.created_at.asc()).offset((page - 1) * page_size).limit(page_size)
-    records = (await db.execute(q)).scalars().all()
+    total = (await db.execute(count_query)).scalar() or 0
+    query = query.order_by(ArchiveRecord.created_at.asc()).offset((page - 1) * page_size).limit(page_size)
+    records = (await db.execute(query)).scalars().all()
     return records, total
 
 
-def records_to_excel(records: list, output_path: str) -> str:
-    """将归档记录列表写入 Excel（先 init 再 append）"""
+def records_to_excel(records: list[ArchiveRecord], output_path: str) -> str:
     init_excel(output_path)
-    for rec in records:
-        fields = {
-            "档号": rec.archive_no or "",
-            "文号": rec.doc_no or "",
-            "责任者": rec.responsible or "",
-            "题名": rec.title or "",
-            "日期": rec.date or "",
-            "页数": rec.pages or "",
-            "密级": rec.classification or "",
-            "备注": rec.remarks or "",
-        }
-        append_to_excel(output_path, fields)
-    logger.info("导出归档记录 %d 条 -> %s", len(records), output_path)
+    for record in records:
+        append_to_excel(
+            output_path,
+            {
+                "档号": record.archive_no or "",
+                "文号": record.doc_no or "",
+                "责任者": record.responsible or "",
+                "题名": record.title or "",
+                "日期": record.date or "",
+                "页数": record.pages or "",
+                "密级": record.classification or "",
+                "备注": record.remarks or "",
+            },
+        )
+    logger.info("Exported %s archive record(s) to %s.", len(records), output_path)
     return output_path
 
 
 async def import_from_excel(db: AsyncSession, file_path: str, batch_id: str = "") -> int:
-    """从 .xlsx / .xls 文件批量导入归档记录到数据库，返回导入行数"""
-    p = Path(file_path)
-    if not p.exists():
-        raise FileNotFoundError(f"文件不存在: {file_path}")
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File does not exist: {file_path}")
 
-    ext = p.suffix.lower()
+    extension = path.suffix.lower()
     rows: list[dict] = []
 
-    if ext == ".xlsx":
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        ws = wb.active
-        header_row_idx = None
+    if extension == ".xlsx":
+        workbook = openpyxl.load_workbook(file_path, data_only=True)
+        worksheet = workbook.active
+        header_row = None
         headers: list[str] = []
-        for r in range(1, min(6, ws.max_row + 1)):
-            vals = [str(ws.cell(r, c).value or "").strip() for c in range(1, 10)]
-            if "档号" in vals or "文号" in vals:
-                header_row_idx = r
-                headers = vals
+        for row_index in range(1, min(6, worksheet.max_row + 1)):
+            values = [str(worksheet.cell(row_index, column).value or "").strip() for column in range(1, 10)]
+            if "档号" in values or "文号" in values:
+                header_row = row_index
+                headers = values
                 break
-        if header_row_idx is None:
-            raise ValueError("未找到表头行（含'档号'或'文号'列）")
-        for r in range(header_row_idx + 1, ws.max_row + 1):
+        if header_row is None:
+            raise ValueError("Could not find the header row in the workbook.")
+        for row_index in range(header_row + 1, worksheet.max_row + 1):
             row = {
-                headers[c - 1]: str(ws.cell(r, c).value or "").strip()
-                for c in range(1, min(len(headers) + 1, 10))
+                headers[column - 1]: str(worksheet.cell(row_index, column).value or "").strip()
+                for column in range(1, min(len(headers) + 1, 10))
             }
-            if any(v for v in row.values()):
+            if any(value for value in row.values()):
                 rows.append(row)
-
-    elif ext == ".xls":
+    elif extension == ".xls":
         try:
             import xlrd
-        except ImportError:
-            raise ImportError("读取 .xls 文件需要 xlrd，请运行: pip install xlrd==1.2.0")
-        wb = xlrd.open_workbook(file_path)
-        ws = wb.sheet_by_index(0)
-        header_row_idx = None
+        except ImportError as exc:
+            raise ImportError("Reading .xls files requires xlrd==1.2.0.") from exc
+
+        workbook = xlrd.open_workbook(file_path)
+        worksheet = workbook.sheet_by_index(0)
+        header_row = None
         headers = []
-        for r in range(min(6, ws.nrows)):
-            vals = [str(ws.cell_value(r, c)).strip() for c in range(min(9, ws.ncols))]
-            if "档号" in vals or "文号" in vals:
-                header_row_idx = r
-                headers = vals
+        for row_index in range(min(6, worksheet.nrows)):
+            values = [str(worksheet.cell_value(row_index, column)).strip() for column in range(min(9, worksheet.ncols))]
+            if "档号" in values or "文号" in values:
+                header_row = row_index
+                headers = values
                 break
-        if header_row_idx is None:
-            raise ValueError("未找到表头行（含'档号'或'文号'列）")
-        for r in range(header_row_idx + 1, ws.nrows):
+        if header_row is None:
+            raise ValueError("Could not find the header row in the workbook.")
+        for row_index in range(header_row + 1, worksheet.nrows):
             row = {
-                headers[c]: str(ws.cell_value(r, c)).strip()
-                for c in range(min(len(headers), ws.ncols))
+                headers[column]: str(worksheet.cell_value(row_index, column)).strip()
+                for column in range(min(len(headers), worksheet.ncols))
             }
-            if any(v for v in row.values()):
+            if any(value for value in row.values()):
                 rows.append(row)
     else:
-        raise ValueError(f"不支持的文件格式: {ext}，请使用 .xlsx 或 .xls")
+        raise ValueError(f"Unsupported file extension: {extension}")
 
+    folder = str(path.parent)
     count = 0
-    folder = str(p.parent)
     for row in rows:
-        record = ArchiveRecord(
-            task_id=None,
-            batch_id=batch_id or f"import_{p.stem}",
-            batch_folder=folder,
-            archive_no=row.get("档号", ""),
-            doc_no=row.get("文号", ""),
-            responsible=row.get("责任者", ""),
-            title=row.get("题名", ""),
-            date=row.get("日期", ""),
-            pages=row.get("页数", ""),
-            classification=row.get("密级", ""),
-            remarks=row.get("备注", ""),
+        db.add(
+            ArchiveRecord(
+                task_id=None,
+                batch_id=batch_id or f"import_{path.stem}",
+                batch_folder=folder,
+                archive_no=row.get("档号", ""),
+                doc_no=row.get("文号", ""),
+                responsible=row.get("责任者", ""),
+                title=row.get("题名", ""),
+                date=row.get("日期", ""),
+                pages=row.get("页数", ""),
+                classification=row.get("密级", ""),
+                remarks=row.get("备注", ""),
+            )
         )
-        db.add(record)
         count += 1
 
     await db.commit()
-    logger.info("从 %s 导入归档记录 %d 条", file_path, count)
+    logger.info("Imported %s archive record(s) from %s.", count, file_path)
     return count

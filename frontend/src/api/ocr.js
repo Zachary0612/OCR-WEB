@@ -68,6 +68,17 @@ export const getBatchEvaluationReport = (batchId, { forceRefresh = false } = {})
 export const askBatchQuestion = (batchId, payload = {}) =>
   api.post(`/batches/${encodeURIComponent(batchId)}/qa`, payload)
 
+export const getBatchQaHistory = (batchId, { page = 1, pageSize = 20 } = {}) =>
+  api.get(`/batches/${encodeURIComponent(batchId)}/qa/history`, {
+    params: { page, page_size: pageSize },
+  })
+
+export const submitBatchQaFeedback = (batchId, qaId, payload = {}) =>
+  api.post(`/batches/${encodeURIComponent(batchId)}/qa/${qaId}/feedback`, payload)
+
+export const getBatchQaMetrics = (batchId) =>
+  api.get(`/batches/${encodeURIComponent(batchId)}/qa/metrics`)
+
 export const deleteTask = (id) => api.delete(`/tasks/${id}`)
 
 export const deleteTasksByFolder = (folder) =>

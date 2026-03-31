@@ -1,19 +1,20 @@
 import logging
 import traceback
-import uvicorn
 from contextlib import asynccontextmanager
-
 from pathlib import Path
 
-from fastapi import FastAPI, Request as FastAPIRequest
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.requests import Request
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 
+from app.api.auth_routes import router as auth_router
 from app.api.routes import router as ocr_router
 from app.db.database import init_db
+from app.services.task_queue import start_task_worker, stop_task_worker
 from config import BASE_DIR
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,68 +24,70 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("正在初始化数据库...")
+async def lifespan(_: FastAPI):
+    logger.info("Initializing database...")
     await init_db()
-    logger.info("数据库初始化完成")
-    # 模型改为懒加载：首次识别时自动初始化，避免启动慢
-    logger.info("服务就绪！模型将在首次使用时自动加载。")
-    yield
+    await start_task_worker()
+    logger.info("Service is ready.")
+    try:
+        yield
+    finally:
+        await stop_task_worker()
 
 
 app = FastAPI(
-    title="PaddleOCR 文档识别系统",
-    description="基于 PaddleOCR 3.0 的文档识别 API",
-    version="1.0.0",
+    title="PaddleOCR Document Service",
+    description="OCR task submission, retrieval, search, and archive export APIs.",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
-# 挂载静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
-
-# 模板
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# 注册 API 路由
+app.include_router(auth_router)
 app.include_router(ocr_router)
+
+VUE_DIST = BASE_DIR / "static" / "vue"
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(request: FastAPIRequest, exc: Exception):
-    tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
-    logger.error("Unhandled exception:\n%s", "".join(tb))
+async def global_exception_handler(request: Request, exc: Exception):
+    traceback_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    logger.error("Unhandled exception on %s:\n%s", request.url.path, "".join(traceback_lines))
     return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 
-# Vue SPA: serve built files if available, otherwise fall back to old template
-VUE_DIST = BASE_DIR / "static" / "vue"
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
 
 
 @app.get("/favicon.ico")
 async def favicon():
-    return FileResponse(str(BASE_DIR / "static" / "favicon.ico"), media_type="image/x-icon")
+    favicon_path = BASE_DIR / "static" / "favicon.ico"
+    if favicon_path.exists():
+        return FileResponse(str(favicon_path), media_type="image/x-icon")
+    return JSONResponse(status_code=404, content={"detail": "favicon.ico not found"})
 
 
 @app.get("/old")
 async def old_index(request: Request):
-    """旧版单页面（保留备用）"""
-    return templates.TemplateResponse(request, "index.html")
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 @app.get("/{full_path:path}")
-async def serve_vue(full_path: str):
-    """Vue SPA catch-all: serve index.html for all non-API routes"""
-    # Try to serve static asset from Vue build
+async def serve_vue(request: Request, full_path: str):
     if full_path:
-        file = VUE_DIST / full_path
-        if file.is_file():
-            return FileResponse(str(file))
-    # Fallback to Vue index.html (SPA routing)
+        candidate = VUE_DIST / full_path
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+
     vue_index = VUE_DIST / "index.html"
     if vue_index.exists():
         return HTMLResponse(vue_index.read_text(encoding="utf-8"))
-    # If Vue not built yet, serve old template
-    return templates.TemplateResponse("index.html", {"request": None})
+
+    return templates.TemplateResponse("index.html", {"request": request})
 
 
 if __name__ == "__main__":

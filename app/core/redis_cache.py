@@ -1,107 +1,110 @@
-"""
-Redis 缓存层
-- 任务详情缓存（避免重复查询数据库）
-- 任务列表缓存（加速列表页加载）
-- 搜索结果缓存
-"""
+"""Cache helpers with graceful Redis fallback."""
+
 import json
 import logging
 from typing import Any
-
-import redis
 
 from config import REDIS_URL
 
 logger = logging.getLogger(__name__)
 
-# Redis 连接
-_redis_client: redis.Redis | None = None
+try:
+    import redis
+except ImportError:  # pragma: no cover - depends on environment
+    redis = None
 
-# 缓存 key 前缀
+
+_redis_client: Any | None = None
+_redis_unavailable = False
+
 PREFIX = "ocr:"
-# 缓存过期时间（秒）
-TASK_TTL = 3600        # 任务详情 1小时
-LIST_TTL = 30          # 列表 30秒（频繁变动）
-SEARCH_TTL = 120       # 搜索结果 2分钟
+TASK_TTL = 3600
+LIST_TTL = 30
+SEARCH_TTL = 120
 
 
-def get_redis() -> redis.Redis | None:
-    """获取 Redis 连接（单例）"""
-    global _redis_client
-    if _redis_client is None:
-        try:
-            _redis_client = redis.from_url(
-                REDIS_URL,
-                decode_responses=True,
-                socket_connect_timeout=2,
-            )
-            _redis_client.ping()
-            logger.info("Redis 连接成功: %s", REDIS_URL)
-        except Exception as e:
-            logger.warning("Redis 连接失败，将不使用缓存: %s", e)
-            _redis_client = None
-    return _redis_client
+def get_redis() -> Any | None:
+    """Return a singleton Redis client when the dependency and service are available."""
+    global _redis_client, _redis_unavailable
+
+    if _redis_unavailable:
+        return None
+    if _redis_client is not None:
+        return _redis_client
+    if redis is None:
+        logger.warning("Redis package is not installed; caching is disabled.")
+        _redis_unavailable = True
+        return None
+
+    try:
+        _redis_client = redis.from_url(
+            REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=2,
+        )
+        _redis_client.ping()
+        logger.info("Connected to Redis: %s", REDIS_URL)
+        return _redis_client
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Redis is unavailable; caching is disabled. %s", error)
+        _redis_unavailable = True
+        _redis_client = None
+        return None
 
 
 def cache_get(key: str) -> Any | None:
-    """从缓存获取数据"""
-    r = get_redis()
-    if not r:
+    client = get_redis()
+    if not client:
         return None
     try:
-        val = r.get(f"{PREFIX}{key}")
-        if val:
-            return json.loads(val)
-    except Exception as e:
-        logger.debug("Redis get 失败: %s", e)
+        value = client.get(f"{PREFIX}{key}")
+        if value:
+            return json.loads(value)
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Redis get failed: %s", error)
     return None
 
 
-def cache_set(key: str, data: Any, ttl: int = TASK_TTL):
-    """写入缓存"""
-    r = get_redis()
-    if not r:
+def cache_set(key: str, data: Any, ttl: int = TASK_TTL) -> None:
+    client = get_redis()
+    if not client:
         return
     try:
-        r.setex(f"{PREFIX}{key}", ttl, json.dumps(data, ensure_ascii=False, default=str))
-    except Exception as e:
-        logger.debug("Redis set 失败: %s", e)
+        client.setex(f"{PREFIX}{key}", ttl, json.dumps(data, ensure_ascii=False, default=str))
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Redis set failed: %s", error)
 
 
-def cache_delete(key: str):
-    """删除缓存"""
-    r = get_redis()
-    if not r:
+def cache_delete(key: str) -> None:
+    client = get_redis()
+    if not client:
         return
     try:
-        r.delete(f"{PREFIX}{key}")
-    except Exception as e:
-        logger.debug("Redis delete 失败: %s", e)
+        client.delete(f"{PREFIX}{key}")
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Redis delete failed: %s", error)
 
 
-def cache_delete_pattern(pattern: str):
-    """按模式批量删除缓存"""
-    r = get_redis()
-    if not r:
+def cache_delete_pattern(pattern: str) -> None:
+    client = get_redis()
+    if not client:
         return
     try:
-        keys = r.keys(f"{PREFIX}{pattern}")
+        keys = client.keys(f"{PREFIX}{pattern}")
         if keys:
-            r.delete(*keys)
-    except Exception as e:
-        logger.debug("Redis delete pattern 失败: %s", e)
+            client.delete(*keys)
+    except Exception as error:  # noqa: BLE001
+        logger.debug("Redis delete pattern failed: %s", error)
 
 
-def invalidate_task(task_id: int):
-    """使某个任务的缓存失效"""
+def invalidate_task(task_id: int) -> None:
     cache_delete(f"task:{task_id}")
     cache_delete_pattern("list:*")
     cache_delete_pattern("search:*")
     cache_delete("folders")
 
 
-def invalidate_lists():
-    """使所有列表/搜索缓存失效"""
+def invalidate_lists() -> None:
     cache_delete_pattern("list:*")
     cache_delete_pattern("search:*")
     cache_delete("folders")

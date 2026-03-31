@@ -1,237 +1,262 @@
 import logging
 import os
+import tempfile
 from pathlib import Path
 
-import json as _json
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from sqlalchemy import delete as sa_delete
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query, Form
-from fastapi.responses import PlainTextResponse, JSONResponse, FileResponse
+from sqlalchemy import func, or_, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import require_auth
+from app.core.path_security import PathSecurityError, ensure_allowed_path
+from app.core.preview import build_thumbnail
+from app.core.redis_cache import (
+    LIST_TTL,
+    SEARCH_TTL,
+    TASK_TTL,
+    cache_delete,
+    cache_delete_pattern,
+    cache_get,
+    cache_set,
+    invalidate_lists,
+    invalidate_task,
+)
+from app.core.result_validation import ResultValidationError, normalize_result_pages, serialize_pages_text
 from app.db.database import get_db
-from app.db.models import OCRTask
-from app.schemas.ocr_schemas import OCRTaskOut, OCRTaskDetail, OCRTaskList
-from app.services.excel_export import (
-    extract_fields,
-    append_to_excel,
-    init_excel,
-    resolve_excel_output_path,
-    clear_excel_data,
+from app.db.models import ArchiveRecord, OCRTask
+from app.schemas.ocr_schemas import (
+    AIBatchMergeExtractRequest,
+    AIBatchMergeExtractResponse,
+    AIExtractFieldsRequest,
+    AIExtractFieldsResponse,
+    BatchQAFeedbackRequest,
+    BatchQAFeedbackResponse,
+    BatchQAHistoryResponse,
+    BatchQAMetricsResponse,
+    BatchQARequest,
+    BatchQAResponse,
+    BatchEvaluationAiReportResponse,
+    BatchEvaluationMetricsResponse,
+    BatchEvaluationTruthGetResponse,
+    BatchEvaluationTruthPutRequest,
+    OCRTaskDetail,
+    OCRTaskList,
+    OCRTaskOut,
 )
-from app.services.archive_service import (
-    save_archive_record,
-    get_archive_records,
-    records_to_excel,
-    import_from_excel,
+from app.services.batch_evaluation_service import (
+    get_batch_evaluation_ai_report,
+    get_batch_evaluation_metrics,
+    get_batch_evaluation_truth,
+    save_batch_evaluation_truth,
 )
+from app.services.batch_qa_service import (
+    answer_batch_question,
+    get_batch_qa_history,
+    get_batch_qa_metrics,
+    submit_batch_qa_feedback,
+)
+from app.services.batch_merge_extraction_service import get_batch_merge_extract_result
+from app.services.archive_service import get_archive_records, import_from_excel, records_to_excel
+from app.services.archive_service import save_archive_record
+from app.services.excel_export import extract_fields
+from app.services.llm_field_extraction_service import MiniMaxServiceError, compare_rule_and_llm_fields
 from app.services.ocr_service import (
-    save_upload_file,
     create_task,
-    run_ocr_task,
-    get_task_list,
-    get_task_detail,
     delete_task,
+    delete_tasks_by_folder,
+    get_task_detail,
+    get_task_list,
+    save_upload_file,
     search_tasks,
 )
-from app.core.redis_cache import (
-    cache_get, cache_set, cache_delete,
-    invalidate_task, invalidate_lists,
-    TASK_TTL, LIST_TTL, SEARCH_TTL,
-)
+from app.services.task_queue import OCRJob, enqueue_task
 from config import MAX_FILE_SIZE
 
+
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/ocr", tags=["OCR"])
+router = APIRouter(
+    prefix="/api/ocr",
+    tags=["OCR"],
+    dependencies=[Depends(require_auth)],
+)
+TERMINAL_STATUSES = {"done", "failed"}
 
 
-def _apply_post_exports(result: dict, detail, source_path: Path, excel_path: str, excel_init: int, output_dir: str):
-    if detail.status != "done":
-        return result
-
-    if output_dir:
-        try:
-            out_dir = Path(output_dir)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            stem = source_path.stem
-            json_out = out_dir / f"{stem}.json"
-            json_out.write_text(
-                _json.dumps(detail.result_json, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-            txt_out = out_dir / f"{stem}.txt"
-            txt_out.write_text(detail.full_text or "", encoding="utf-8")
-            result["output_saved"] = str(out_dir)
-            logger.info("识别结果已保存: %s -> %s", detail.filename, out_dir)
-        except Exception as ex:
-            logger.warning("保存结果文件失败: %s", ex)
-            result["output_saved"] = False
-
-    if excel_path:
-        actual_excel_path = excel_path
-        try:
-            actual_excel_path = resolve_excel_output_path(excel_path)
-            ep = Path(actual_excel_path)
-            if not ep.exists():
-                init_excel(actual_excel_path)
-            elif excel_init:
-                clear_excel_data(actual_excel_path)
-                logger.info("已清空Excel旧数据: %s", actual_excel_path)
-            fields = extract_fields(
-                detail.filename, detail.full_text or "",
-                detail.result_json, detail.page_count
-            )
-            append_to_excel(actual_excel_path, fields)
-            result["excel_exported"] = True
-            result["excel_path"] = actual_excel_path
-            logger.info("已写入归档Excel: %s -> %s", detail.filename, actual_excel_path)
-        except Exception as ex:
-            logger.warning("写入Excel失败: %s", ex)
-            result["excel_exported"] = False
-            result["excel_path"] = actual_excel_path
-
-    return result
+def _task_payload(task: OCRTask) -> dict:
+    return OCRTaskDetail.model_validate(task).model_dump(mode="json")
 
 
-@router.post("/upload")
-async def upload_and_recognize(
+def _extract_snippet(task: OCRTask, keyword: str, context: int = 50) -> str:
+    lowered = keyword.lower()
+
+    if task.full_text and lowered in task.full_text.lower():
+        return _cut_around(task.full_text, lowered, context)
+
+    if task.result_json:
+        pages = task.result_json if isinstance(task.result_json, list) else [task.result_json]
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            for region in page.get("regions", []):
+                content = str(region.get("content", "") or "")
+                if lowered in content.lower():
+                    return _cut_around(content, lowered, context)
+            for line in page.get("lines", []):
+                text = str(line.get("text", "") or "")
+                if lowered in text.lower():
+                    return _cut_around(text, lowered, context)
+
+    if lowered in (task.filename or "").lower():
+        return f"Filename match: {task.filename}"
+
+    return ""
+
+
+def _cut_around(text: str, keyword: str, context: int = 50) -> str:
+    index = text.lower().index(keyword)
+    start = max(0, index - context)
+    end = min(len(text), index + len(keyword) + context)
+    snippet = text[start:end].replace("\n", " ")
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{snippet}{suffix}"
+
+
+def _raise_bad_request(error: Exception) -> None:
+    if isinstance(error, PathSecurityError):
+        status_code = status.HTTP_403_FORBIDDEN if "outside allowed roots" in str(error) else status.HTTP_400_BAD_REQUEST
+        raise HTTPException(status_code=status_code, detail=str(error)) from error
+    if isinstance(error, ResultValidationError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    if isinstance(error, MiniMaxServiceError):
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+    raise error
+
+
+@router.post("/upload", response_model=OCRTaskDetail, status_code=status.HTTP_202_ACCEPTED)
+async def upload_and_enqueue(
     file: UploadFile = File(...),
     relative_path: str = Form(""),
     mode: str = Query("vl", pattern="^(vl|layout|ocr)$"),
-    excel_path: str = Query("", description="可选：自动写入归档Excel的路径"),
-    excel_init: int = Query(0, description="为1时先清空Excel数据行（批次第一个文件传入）"),
-    output_dir: str = Query("", description="可选：识别结果输出目录，将生成 .json 和 .txt 文件"),
-    batch_id: str = Query("", description="批次标识，同一批次所有文件传相同值"),
+    excel_path: str = Query(""),
+    excel_init: int = Query(0),
+    output_dir: str = Query(""),
+    batch_id: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
-    """上传文件并执行 OCR 识别
-    
-    mode: layout=PP-StructureV3版面解析(含表格), ocr=PP-OCRv5基础识别(快速)
-    """
-    body_batch_id = batch_id
     if not file.filename:
-        raise HTTPException(status_code=400, detail="未提供文件")
+        raise HTTPException(status_code=400, detail="Missing file name.")
 
     content = await file.read()
     if len(content) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail=f"文件过大，最大允许 {MAX_FILE_SIZE // 1024 // 1024}MB")
+        raise HTTPException(status_code=400, detail=f"File exceeds {MAX_FILE_SIZE // 1024 // 1024}MB.")
 
     try:
         file_path, file_type = await save_upload_file(file.filename, content, relative_path)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
-    try:
-        task = await create_task(db, file.filename, file_path, file_type, mode=mode)
-        logger.info("创建任务 %d: %s (mode=%s)", task.id, file.filename, mode)
-
-        task = await run_ocr_task(db, task.id, mode=mode)
-
-        detail = await get_task_detail(db, task.id)
-        result = OCRTaskDetail.model_validate(detail).model_dump(mode='json')
-        result = _apply_post_exports(result, detail, Path(file.filename), excel_path, excel_init, output_dir)
-        try:
-            batch_id = body_batch_id or ""
-            fields = extract_fields(detail.filename, detail.full_text or "", detail.result_json, detail.page_count)
-            await save_archive_record(db, task.id, batch_id, str(Path(file_path).parent), fields)
-        except Exception as ex:
-            logger.warning("保存归档记录失败: %s", ex)
-        cache_set(f"task:{detail.id}", result, TASK_TTL)
-        invalidate_lists()
-        return result
-    except Exception as e:
-        logger.exception("OCR 处理失败: %s", str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    task = await create_task(db, file.filename, file_path, file_type, mode=mode)
+    await enqueue_task(
+        OCRJob(
+            task_id=task.id,
+            mode=mode,
+            excel_path=excel_path,
+            excel_init=excel_init,
+            output_dir=output_dir,
+            batch_id=batch_id,
+        )
+    )
+    invalidate_lists()
+    return _task_payload(task)
 
 
 @router.get("/scan-folder")
-async def scan_folder(path: str = Query(..., description="本地文件夹路径")):
-    """扫描本地文件夹，返回支持的图片/PDF文件列表（递归）"""
-    import os
-    ACCEPTED = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.pdf'}
-    folder = Path(path)
-    if not folder.exists() or not folder.is_dir():
-        raise HTTPException(status_code=400, detail=f"路径不存在或不是文件夹: {path}")
+async def scan_folder(path: str = Query(..., description="Absolute path under an allowed root.")):
+    try:
+        folder = ensure_allowed_path(path, expect_dir=True)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
     files = []
-    for root, dirs, filenames in os.walk(folder):
-        dirs.sort()
-        for name in sorted(filenames):
-            ext = Path(name).suffix.lower()
-            if ext in ACCEPTED:
-                full = Path(root) / name
-                rel = str(full.relative_to(folder))
-                files.append({
-                    "name": name,
-                    "path": str(full),
-                    "rel_path": rel,
-                    "size": full.stat().st_size,
-                })
+    for root, directories, filenames in os.walk(folder):
+        directories.sort()
+        for filename in sorted(filenames):
+            full_path = Path(root) / filename
+            extension = full_path.suffix.lower()
+            if extension not in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf"}:
+                continue
+            files.append(
+                {
+                    "name": filename,
+                    "path": str(full_path),
+                    "rel_path": str(full_path.relative_to(folder)),
+                    "size": full_path.stat().st_size,
+                }
+            )
+
     return {"folder": str(folder), "count": len(files), "files": files}
 
 
-@router.post("/upload-from-path")
+@router.post("/upload-from-path", response_model=OCRTaskDetail, status_code=status.HTTP_202_ACCEPTED)
 async def upload_from_path(
     body: dict,
     mode: str = Query("vl", pattern="^(vl|layout|ocr)$"),
-    excel_path: str = Query("", description="可选：自动写入归档Excel的路径"),
-    excel_init: int = Query(0, description="为1时先清空Excel数据行（批次第一个文件传入）"),
-    output_dir: str = Query("", description="可选：识别结果输出目录，将生成 .json 和 .txt 文件"),
-    batch_id: str = Query("", description="批次标识，同一批次所有文件传相同值"),
+    excel_path: str = Query(""),
+    excel_init: int = Query(0),
+    output_dir: str = Query(""),
+    batch_id: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
-    """从服务器本地路径直接识别文件（无需上传），可选自动写入归档Excel和结果目录"""
-    file_path_str = body.get("file_path", "")
-    file_path = Path(file_path_str)
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=400, detail=f"文件不存在: {file_path_str}")
-    file_type = file_path.suffix.lower()
-    ACCEPTED = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.pdf'}
-    if file_type not in ACCEPTED:
-        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {file_type}")
     try:
-        task = await create_task(db, file_path.name, str(file_path), file_type, mode=mode)
-        task = await run_ocr_task(db, task.id, mode=mode)
-        detail = await get_task_detail(db, task.id)
-        result = OCRTaskDetail.model_validate(detail).model_dump(mode='json')
-        result = _apply_post_exports(result, detail, file_path, excel_path, excel_init, output_dir)
-        try:
-            fields = extract_fields(detail.filename, detail.full_text or "", detail.result_json, detail.page_count)
-            await save_archive_record(db, task.id, batch_id, str(file_path.parent), fields)
-        except Exception as ex:
-            logger.warning("保存归档记录失败: %s", ex)
-        cache_set(f"task:{detail.id}", result, TASK_TTL)
-        invalidate_lists()
+        file_path = ensure_allowed_path(body.get("file_path", ""), expect_file=True)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
 
-        return result
-    except Exception as e:
-        logger.exception("本地路径识别失败: %s", str(e))
-        invalidate_lists()
-        return {"error": str(e), "file_path": file_path_str, "status": "failed"}
+    file_type = file_path.suffix.lower()
+    if file_type not in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
+
+    task = await create_task(db, file_path.name, str(file_path), file_type, mode=mode)
+    await enqueue_task(
+        OCRJob(
+            task_id=task.id,
+            mode=mode,
+            excel_path=excel_path,
+            excel_init=excel_init,
+            output_dir=output_dir,
+            batch_id=batch_id,
+        )
+    )
+    invalidate_lists()
+    return _task_payload(task)
 
 
 @router.get("/archive-records/export")
 async def export_archive_records(
-    folder: str = Query("", description="按文件夹过滤，空=全部"),
-    batch_id: str = Query("", description="按批次ID过滤"),
+    folder: str = Query(""),
+    batch_id: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
-    """将归档记录导出为 Excel 文件下载"""
-    import tempfile
-    records, total = await get_archive_records(db, folder=folder, batch_id=batch_id, page=1, page_size=10000)
+    records, _ = await get_archive_records(db, folder=folder, batch_id=batch_id, page=1, page_size=10000)
     if not records:
-        raise HTTPException(status_code=404, detail="没有符合条件的归档记录")
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".xlsx")
-    os.close(tmp_fd)
+        raise HTTPException(status_code=404, detail="No archive records found.")
+
+    file_descriptor, temp_path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(file_descriptor)
     try:
-        records_to_excel(list(records), tmp_path)
+        records_to_excel(list(records), temp_path)
         return FileResponse(
-            tmp_path,
+            temp_path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename="归档文件目录.xlsx",
+            filename="archive_records.xlsx",
         )
-    except Exception as e:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise HTTPException(status_code=500, detail=f"导出失败: {e}")
+    except Exception as error:  # noqa: BLE001
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise HTTPException(status_code=500, detail=f"Export failed: {error}") from error
 
 
 @router.get("/archive-records")
@@ -242,253 +267,441 @@ async def list_archive_records(
     page_size: int = Query(200, ge=1, le=1000),
     db: AsyncSession = Depends(get_db),
 ):
-    """查询归档记录列表"""
     records, total = await get_archive_records(db, folder=folder, batch_id=batch_id, page=page, page_size=page_size)
     return {
         "total": total,
         "records": [
             {
-                "id": r.id,
-                "task_id": r.task_id,
-                "batch_id": r.batch_id,
-                "batch_folder": r.batch_folder,
-                "archive_no": r.archive_no,
-                "doc_no": r.doc_no,
-                "responsible": r.responsible,
-                "title": r.title,
-                "date": r.date,
-                "pages": r.pages,
-                "classification": r.classification,
-                "remarks": r.remarks,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "id": record.id,
+                "task_id": record.task_id,
+                "batch_id": record.batch_id,
+                "batch_folder": record.batch_folder,
+                "archive_no": record.archive_no,
+                "doc_no": record.doc_no,
+                "responsible": record.responsible,
+                "title": record.title,
+                "date": record.date,
+                "pages": record.pages,
+                "classification": record.classification,
+                "remarks": record.remarks,
+                "created_at": record.created_at.isoformat() if record.created_at else None,
             }
-            for r in records
+            for record in records
         ],
     }
 
 
 @router.post("/archive-records/import-excel")
-async def import_archive_from_excel(
-    body: dict,
-    db: AsyncSession = Depends(get_db),
-):
-    """从本地 Excel 文件（.xlsx/.xls）导入归档记录到数据库"""
+async def import_archive_from_excel(body: dict, db: AsyncSession = Depends(get_db)):
     file_path = body.get("file_path", "")
     batch_id = body.get("batch_id", "")
     if not file_path:
-        raise HTTPException(status_code=400, detail="请提供 file_path 字段")
+        raise HTTPException(status_code=400, detail="file_path is required.")
     try:
         count = await import_from_excel(db, file_path, batch_id)
-        return {"imported": count, "file_path": file_path}
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except (ValueError, ImportError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"导入失败: {e}")
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except (ImportError, ValueError) as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Import failed: {error}") from error
+    return {"imported": count, "file_path": file_path}
 
 
 @router.delete("/archive-records")
 async def delete_archive_records(
-    folder: str = Query("", description="按文件夹删除，空=全部"),
-    batch_id: str = Query("", description="按批次ID删除"),
+    folder: str = Query(""),
+    batch_id: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除归档记录"""
-    from app.db.models import ArchiveRecord as AR
-    q = sa_delete(AR)
+    query = sa_delete(ArchiveRecord)
     if folder:
-        q = q.where(AR.batch_folder == folder)
+        query = query.where(ArchiveRecord.batch_folder == folder)
     if batch_id:
-        q = q.where(AR.batch_id == batch_id)
-    result = await db.execute(q)
+        query = query.where(ArchiveRecord.batch_id == batch_id)
+    result = await db.execute(query)
     await db.commit()
     return {"deleted": result.rowcount}
 
 
 @router.get("/tasks/search")
 async def search_tasks_api(
-    q: str = Query("", min_length=1, description="搜索关键词"),
+    q: str = Query("", min_length=1),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """搜索已识别文档（按文件名、识别文本、JSON内容模糊匹配，含表格）"""
     cache_key = f"search:{q}:{page}:{page_size}"
     cached = cache_get(cache_key)
     if cached:
         return cached
+
     tasks, total = await search_tasks(db, q, page, page_size)
-    task_list = []
-    for t in tasks:
-        item = OCRTaskOut.model_validate(t).model_dump(mode='json')
-        snippet = _extract_snippet(t, q)
-        item['snippet'] = snippet
-        task_list.append(item)
-    resp = {"total": total, "tasks": task_list}
-    cache_set(cache_key, resp, SEARCH_TTL)
-    return resp
-
-
-def _extract_snippet(task, keyword: str, ctx: int = 50) -> str:
-    """从 full_text 和 result_json 中提取包含关键词的片段"""
-    kw = keyword.lower()
-
-    # 1. Try full_text first
-    if task.full_text and kw in task.full_text.lower():
-        return _cut_around(task.full_text, kw, ctx)
-
-    # 2. Try extracting from result_json (regions content + table html)
-    if task.result_json:
-        pages = task.result_json if isinstance(task.result_json, list) else [task.result_json]
-        for page in pages:
-            if not isinstance(page, dict):
-                continue
-            for region in page.get("regions", []):
-                content = region.get("content", "") or ""
-                if kw in content.lower():
-                    return _cut_around(content, kw, ctx)
-                html = region.get("html", "") or ""
-                if kw in html.lower():
-                    # Strip HTML tags for clean snippet
-                    import re
-                    clean = re.sub(r'<[^>]+>', ' ', html)
-                    if kw in clean.lower():
-                        return _cut_around(clean, kw, ctx)
-            for line in page.get("lines", []):
-                text = line.get("text", "") or ""
-                if kw in text.lower():
-                    return _cut_around(text, kw, ctx)
-
-    # 3. Filename match
-    if kw in (task.filename or "").lower():
-        return f"文件名匹配: {task.filename}"
-
-    return ""
-
-
-def _cut_around(text: str, kw: str, ctx: int = 50) -> str:
-    """Cut a snippet around the keyword with context"""
-    idx = text.lower().index(kw)
-    start = max(0, idx - ctx)
-    end = min(len(text), idx + len(kw) + ctx)
-    s = text[start:end].replace('\n', ' ')
-    return ('...' if start > 0 else '') + s + ('...' if end < len(text) else '')
+    payload = {
+        "total": total,
+        "tasks": [
+            {
+                **OCRTaskOut.model_validate(task).model_dump(mode="json"),
+                "snippet": _extract_snippet(task, q),
+            }
+            for task in tasks
+        ],
+    }
+    cache_set(cache_key, payload, SEARCH_TTL)
+    return payload
 
 
 @router.get("/tasks/folders")
 async def list_folders(db: AsyncSession = Depends(get_db)):
-    """获取所有任务的源文件夹列表（用于前端分组显示）"""
-    from sqlalchemy import text as sa_text
     cached = cache_get("folders")
     if cached:
         return cached
-    # Order by created_at DESC so first task seen per folder is the latest
-    result = await db.execute(sa_text(
-        "SELECT id, file_path, created_at FROM ocr_tasks ORDER BY created_at DESC"
-    ))
-    rows = result.fetchall()
-    folders: dict = {}
-    for id_, file_path, created_at in rows:
+
+    rows = (
+        await db.execute(sa_text("SELECT id, file_path, created_at FROM ocr_tasks ORDER BY created_at DESC"))
+    ).fetchall()
+    folders: dict[str, dict] = {}
+    for task_id, file_path, created_at in rows:
         if not file_path:
             continue
-        p = Path(file_path)
-        folder = str(p.parent)
+        folder = str(Path(file_path).parent)
         if folder not in folders:
-            folders[folder] = {"folder": folder, "count": 0, "last_time": None, "latest_task_id": id_}
+            folders[folder] = {
+                "folder": folder,
+                "count": 0,
+                "last_time": None,
+                "latest_task_id": task_id,
+            }
         folders[folder]["count"] += 1
         if created_at and (folders[folder]["last_time"] is None or created_at > folders[folder]["last_time"]):
             folders[folder]["last_time"] = created_at
-            folders[folder]["latest_task_id"] = id_
-    from datetime import datetime as _dt
-    result_list = sorted(folders.values(), key=lambda x: x["last_time"] or _dt.min, reverse=True)
-    cache_set("folders", result_list, LIST_TTL)
-    return result_list
+            folders[folder]["latest_task_id"] = task_id
+
+    from datetime import datetime
+
+    result = sorted(folders.values(), key=lambda item: item["last_time"] or datetime.min, reverse=True)
+    cache_set("folders", result, LIST_TTL)
+    return result
 
 
 @router.delete("/tasks/by-folder")
-async def delete_tasks_by_folder(
-    folder: str = Query(..., description="要删除的文件夹路径"),
+async def delete_tasks_for_folder(
+    folder: str = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
-    """删除指定文件夹下的所有任务"""
-    from sqlalchemy import delete as sa_delete, func, or_
-    base = folder.rstrip("/\\")
-    result = await db.execute(
-        sa_delete(OCRTask).where(
-            or_(
-                func.starts_with(OCRTask.file_path, base + "\\"),
-                func.starts_with(OCRTask.file_path, base + "/"),
-            )
-        )
-    )
-    await db.commit()
+    deleted = await delete_tasks_by_folder(db, folder)
+    cache_delete_pattern("task:*")
     invalidate_lists()
-    logger.info("删除文件夹任务: %s (%d 条)", folder, result.rowcount)
-    return {"deleted": result.rowcount, "folder": folder}
+    return {"deleted": deleted, "folder": folder}
 
 
 @router.get("/tasks", response_model=OCRTaskList)
 async def list_tasks(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=1000),
-    folder: str = Query("", description="按源文件夹过滤"),
+    folder: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取识别任务列表"""
     cache_key = f"list:{page}:{page_size}:{folder}"
     cached = cache_get(cache_key)
     if cached:
         return cached
+
     tasks, total = await get_task_list(db, page, page_size, folder=folder)
-    resp = OCRTaskList(total=total, tasks=[OCRTaskOut.model_validate(t) for t in tasks])
-    cache_set(cache_key, resp.model_dump(mode='json'), LIST_TTL)
-    return resp
+    payload = OCRTaskList(total=total, tasks=[OCRTaskOut.model_validate(task) for task in tasks]).model_dump(mode="json")
+    cache_set(cache_key, payload, LIST_TTL)
+    return payload
 
 
-@router.get("/tasks/{task_id}")
+@router.get("/tasks/{task_id}", response_model=OCRTaskDetail)
 async def get_task(task_id: int, db: AsyncSession = Depends(get_db)):
-    """获取单个任务详情"""
     cached = cache_get(f"task:{task_id}")
-    if cached:
+    if cached and cached.get("status") in TERMINAL_STATUSES:
         return cached
+
     task = await get_task_detail(db, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    try:
-        result = OCRTaskDetail.model_validate(task).model_dump(mode='json')
-        cache_set(f"task:{task_id}", result, TASK_TTL)
-        return result
-    except Exception as e:
-        logger.exception("序列化任务 %d 失败: %s", task_id, str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=404, detail="Task not found.")
+
+    payload = _task_payload(task)
+    if task.status in TERMINAL_STATUSES:
+        cache_set(f"task:{task_id}", payload, TASK_TTL)
+    else:
+        cache_delete(f"task:{task_id}")
+    return payload
 
 
-@router.put("/tasks/{task_id}")
+@router.put("/tasks/{task_id}", response_model=OCRTaskDetail)
 async def update_task(task_id: int, body: dict, db: AsyncSession = Depends(get_db)):
-    """更新已保存任务的识别结果（编辑后保存）"""
     task = await get_task_detail(db, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-    if "result_json" in body:
-        task.result_json = body["result_json"]
-    if "full_text" in body:
-        task.full_text = body["full_text"]
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.status not in TERMINAL_STATUSES:
+        raise HTTPException(status_code=409, detail="Task result cannot be edited while it is still processing.")
+
+    try:
+        if "result_json" in body:
+            pages = normalize_result_pages(body["result_json"])
+            task.result_json = pages
+            task.full_text = serialize_pages_text(pages)
+            task.page_count = len(pages)
+        elif "full_text" in body:
+            task.full_text = str(body["full_text"] or "")
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
     await db.commit()
     await db.refresh(task)
-    logger.info("更新任务 %d 的识别结果", task_id)
+    if task.result_json:
+        existing_record = (
+            await db.execute(select(ArchiveRecord).where(ArchiveRecord.task_id == task.id))
+        ).scalar_one_or_none()
+        fields = extract_fields(task.filename, task.full_text or "", task.result_json, task.page_count)
+        await save_archive_record(
+            db,
+            task.id,
+            existing_record.batch_id if existing_record else "",
+            existing_record.batch_folder if existing_record else str(Path(task.file_path).parent),
+            fields,
+        )
     invalidate_task(task_id)
-    return OCRTaskDetail.model_validate(task).model_dump(mode='json')
+    return _task_payload(task)
+
+
+@router.post("/tasks/{task_id}/ai-extract-fields", response_model=AIExtractFieldsResponse)
+async def ai_extract_fields(
+    task_id: int,
+    body: AIExtractFieldsRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    body = body or AIExtractFieldsRequest()
+    task = await get_task_detail(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.status != "done":
+        raise HTTPException(status_code=409, detail="AI extraction is only available after OCR is finished.")
+
+    try:
+        comparison = await compare_rule_and_llm_fields(task, include_evidence=body.include_evidence)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if body.persist:
+        if comparison["conflicts"]:
+            raise HTTPException(
+                status_code=409,
+                detail="AI extraction conflicts with rule extraction. Resolve conflicts before persisting.",
+            )
+
+        existing_record = (
+            await db.execute(select(ArchiveRecord).where(ArchiveRecord.task_id == task.id))
+        ).scalar_one_or_none()
+        await save_archive_record(
+            db,
+            task.id,
+            existing_record.batch_id if existing_record else "",
+            existing_record.batch_folder if existing_record else str(Path(task.file_path).parent),
+            comparison["recommended_fields"],
+        )
+
+    return comparison
+
+
+@router.post("/batches/{batch_id}/ai-merge-extract", response_model=AIBatchMergeExtractResponse)
+async def ai_merge_extract_batch(
+    batch_id: str,
+    body: AIBatchMergeExtractRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    body = body or AIBatchMergeExtractRequest()
+    if body.persist:
+        raise HTTPException(
+            status_code=400,
+            detail="persist=true is not supported for batch AI merge extraction in phase 1.",
+        )
+
+    try:
+        result = await get_batch_merge_extract_result(
+            db,
+            batch_id=batch_id,
+            include_evidence=body.include_evidence,
+            force_refresh=body.force_refresh,
+        )
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail="No eligible completed tasks were found for this batch.",
+        )
+
+    return result
+
+
+@router.get("/batches/{batch_id}/evaluation-truth", response_model=BatchEvaluationTruthGetResponse)
+async def get_batch_truth(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    payload = await get_batch_evaluation_truth(db, batch_id=batch_id)
+    return payload
+
+
+@router.put("/batches/{batch_id}/evaluation-truth", response_model=BatchEvaluationTruthGetResponse)
+async def put_batch_truth(
+    batch_id: str,
+    body: BatchEvaluationTruthPutRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = await save_batch_evaluation_truth(
+            db,
+            batch_id=batch_id,
+            tasks=[item.model_dump(mode="python") for item in body.tasks],
+            documents=[item.model_dump(mode="python") for item in body.documents],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return payload
+
+
+@router.get("/batches/{batch_id}/evaluation-metrics", response_model=BatchEvaluationMetricsResponse)
+async def get_batch_metrics(
+    batch_id: str,
+    force_refresh: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = await get_batch_evaluation_metrics(
+            db,
+            batch_id=batch_id,
+            force_refresh=force_refresh,
+        )
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if not payload:
+        raise HTTPException(status_code=404, detail="No eligible completed tasks were found for this batch.")
+    return payload
+
+
+@router.get("/batches/{batch_id}/evaluation-report", response_model=BatchEvaluationAiReportResponse)
+async def get_batch_ai_report(
+    batch_id: str,
+    force_refresh: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = await get_batch_evaluation_ai_report(
+            db,
+            batch_id=batch_id,
+            force_refresh=force_refresh,
+        )
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if not payload:
+        raise HTTPException(status_code=404, detail="No eligible completed tasks were found for this batch.")
+    return payload
+
+
+@router.post("/batches/{batch_id}/qa", response_model=BatchQAResponse)
+async def batch_qa(
+    batch_id: str,
+    body: BatchQARequest,
+    db: AsyncSession = Depends(get_db),
+):
+    question = (body.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question must not be empty.")
+
+    try:
+        payload = await answer_batch_question(
+            db,
+            batch_id=batch_id,
+            question=question,
+            top_k=body.top_k,
+            persist=body.persist,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if not payload:
+        raise HTTPException(status_code=404, detail="No eligible completed tasks were found for this batch.")
+    return payload
+
+
+@router.get("/batches/{batch_id}/qa/history", response_model=BatchQAHistoryResponse)
+async def batch_qa_history(
+    batch_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = await get_batch_qa_history(
+            db,
+            batch_id=batch_id,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+    return payload
+
+
+@router.post("/batches/{batch_id}/qa/{qa_id}/feedback", response_model=BatchQAFeedbackResponse)
+async def batch_qa_feedback(
+    batch_id: str,
+    qa_id: int,
+    body: BatchQAFeedbackRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = await submit_batch_qa_feedback(
+            db,
+            batch_id=batch_id,
+            qa_id=qa_id,
+            rating=body.rating,
+            reason=body.reason,
+            comment=body.comment,
+            corrected_answer=body.corrected_answer,
+            corrected_evidence=[item.model_dump(mode="python") for item in body.corrected_evidence],
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if not payload:
+        raise HTTPException(status_code=404, detail="QA record not found for this batch.")
+    return payload
+
+
+@router.get("/batches/{batch_id}/qa/metrics", response_model=BatchQAMetricsResponse)
+async def batch_qa_metrics(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        payload = await get_batch_qa_metrics(db, batch_id=batch_id)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+    return payload
 
 
 @router.delete("/tasks/{task_id}")
 async def remove_task(task_id: int, db: AsyncSession = Depends(get_db)):
-    """删除任务"""
-    success = await delete_task(db, task_id)
-    if not success:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    deleted = await delete_task(db, task_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Task not found.")
     invalidate_task(task_id)
-    return {"message": "删除成功"}
+    return {"message": "Deleted"}
 
 
 @router.get("/tasks/{task_id}/export")
@@ -497,46 +710,57 @@ async def export_task(
     fmt: str = Query("txt", pattern="^(txt|json)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    """导出识别结果"""
     task = await get_task_detail(db, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
+        raise HTTPException(status_code=404, detail="Task not found.")
 
     if fmt == "txt":
         return PlainTextResponse(
             content=task.full_text or "",
             headers={"Content-Disposition": f'attachment; filename="{task.filename}.txt"'},
         )
-    else:
-        export_data = {
+
+    return JSONResponse(
+        content={
             "filename": task.filename,
             "page_count": task.page_count,
             "full_text": task.full_text,
             "result_json": task.result_json,
-        }
-        return JSONResponse(
-            content=export_data,
-            headers={"Content-Disposition": f'attachment; filename="{task.filename}.json"'},
-        )
+        },
+        headers={"Content-Disposition": f'attachment; filename="{task.filename}.json"'},
+    )
 
 
 @router.get("/tasks/{task_id}/file")
 async def get_task_file(task_id: int, db: AsyncSession = Depends(get_db)):
-    """获取任务的原始文件（用于前端预览）"""
     task = await get_task_detail(db, task_id)
     if not task:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    file_path = Path(task.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
+        raise HTTPException(status_code=404, detail="Task not found.")
+    try:
+        file_path = ensure_allowed_path(task.file_path, expect_file=True)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
 
     media_types = {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".bmp": "image/bmp",
-        ".tiff": "image/tiff", ".tif": "image/tiff",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".tif": "image/tiff",
         ".pdf": "application/pdf",
     }
-    ext = file_path.suffix.lower()
-    media_type = media_types.get(ext, "application/octet-stream")
-    return FileResponse(file_path, media_type=media_type)
+    return FileResponse(file_path, media_type=media_types.get(file_path.suffix.lower(), "application/octet-stream"))
+
+
+@router.get("/tasks/{task_id}/thumbnail")
+async def get_task_thumbnail(task_id: int, db: AsyncSession = Depends(get_db)):
+    task = await get_task_detail(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    try:
+        file_path = ensure_allowed_path(task.file_path, expect_file=True)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    return Response(content=build_thumbnail(file_path), media_type="image/png")
