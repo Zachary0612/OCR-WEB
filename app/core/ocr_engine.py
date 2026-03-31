@@ -1,6 +1,7 @@
 import logging
 import re
 import tempfile
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,35 @@ def _pipeline_has_doc_preprocessor(pipeline) -> bool:
         return getattr(pipeline, "doc_preprocessor_pipeline") is not None
     except Exception:
         return False
+
+
+def _structured_predict_kwargs(pipeline, profile: str) -> dict[str, Any]:
+    if profile == "vl":
+        return {}
+
+    kwargs: dict[str, Any] = {
+        "use_doc_orientation_classify": True,
+        "use_doc_unwarping": True,
+        "use_table_recognition": True,
+        "use_seal_recognition": True,
+        "layout_shape_mode": "poly",
+        "layout_merge_bboxes_mode": "union",
+        "format_block_content": True,
+    }
+
+    if not _pipeline_has_doc_preprocessor(pipeline):
+        disabled = []
+        for arg_name in ("use_doc_orientation_classify", "use_doc_unwarping"):
+            if arg_name in kwargs:
+                kwargs.pop(arg_name)
+                disabled.append(arg_name)
+        if disabled:
+            logger.info(
+                "当前管线未初始化 doc_preprocessor_pipeline，预测前跳过 %s。",
+                ", ".join(disabled),
+            )
+
+    return kwargs
 
 
 def _require_fitz():
@@ -476,32 +506,28 @@ def _extract_page_lines(res, line_num_start: int = 0) -> tuple[list[dict], int]:
     return page_lines, line_num
 
 
-def _predict_structured(pipeline, image_path: str):
-    kwargs = {
-        "use_doc_orientation_classify": True,
-        "use_doc_unwarping": True,
-        "use_table_recognition": True,
-        "use_seal_recognition": True,
-        "layout_shape_mode": "poly",
-        "layout_merge_bboxes_mode": "union",
-        "format_block_content": True,
-    }
-
-    if not _pipeline_has_doc_preprocessor(pipeline):
-        disabled = []
-        for arg_name in ("use_doc_orientation_classify", "use_doc_unwarping"):
-            if arg_name in kwargs:
-                kwargs.pop(arg_name)
-                disabled.append(arg_name)
-        if disabled:
-            logger.info(
-                "当前管线未初始化 doc_preprocessor_pipeline，预测前跳过 %s。",
-                ", ".join(disabled),
-            )
+def _predict_structured(pipeline, image_path: str, profile: str = "layout"):
+    kwargs = _structured_predict_kwargs(pipeline, profile)
+    predict_name = "VL" if profile == "vl" else "Layout"
+    logger.info(
+        "开始执行 %s 预测: %s (kwargs=%s)",
+        predict_name,
+        Path(image_path).name,
+        ", ".join(sorted(kwargs)) or "none",
+    )
+    started_at = time.perf_counter()
 
     while True:
         try:
-            return list(pipeline.predict(image_path, **kwargs))
+            results = list(pipeline.predict(input=image_path, **kwargs))
+            logger.info(
+                "%s 预测完成: %s, 输出 %s 个结果, 用时 %.2fs",
+                predict_name,
+                Path(image_path).name,
+                len(results),
+                time.perf_counter() - started_at,
+            )
+            return results
         except TypeError as exc:
             match = _UNSUPPORTED_PREDICT_ARG_RE.search(str(exc))
             if not match:
@@ -674,11 +700,11 @@ def ocr_image_basic(image_path: str) -> dict:
 # ===== PP-StructureV3 版面解析 =====
 def ocr_image_with_layout(image_path: str) -> dict:
     """
-    使用 PP-StructureV3 版面解析（含表格识别）
-    返回: {"regions": [...], "lines": [...]}
+    使用 PP-StructureV3 版面解析（layout）
+    返回: {"regions": [...], "lines": [...]} 
     """
     pipeline = get_layout_pipeline()
-    results = _predict_structured(pipeline, image_path)
+    results = _predict_structured(pipeline, image_path, profile="layout")
 
     regions = []
     lines = []
@@ -728,7 +754,7 @@ def ocr_image_with_vl(image_path: str) -> dict:
     返回: {"regions": [...], "lines": []}
     """
     pipeline = get_vl_pipeline()
-    results = _predict_structured(pipeline, image_path)
+    results = _predict_structured(pipeline, image_path, profile="vl")
 
     regions = []
     line_num = 0
