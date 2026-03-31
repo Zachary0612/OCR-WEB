@@ -58,6 +58,15 @@ _UNSUPPORTED_PREDICT_ARG_RE = re.compile(r"unexpected keyword argument ['\"](?P<
 _MISSING_DOC_PREPROCESSOR_RE = re.compile(r"doc_preprocessor_pipeline")
 
 
+def _pipeline_has_doc_preprocessor(pipeline) -> bool:
+    if not hasattr(pipeline, "doc_preprocessor_pipeline"):
+        return False
+    try:
+        return getattr(pipeline, "doc_preprocessor_pipeline") is not None
+    except Exception:
+        return False
+
+
 def _require_fitz():
     if fitz is None:
         raise RuntimeError("PyMuPDF is required to process PDF files. Install PyMuPDF>=1.24.0.")
@@ -477,6 +486,19 @@ def _predict_structured(pipeline, image_path: str):
         "layout_merge_bboxes_mode": "union",
         "format_block_content": True,
     }
+
+    if not _pipeline_has_doc_preprocessor(pipeline):
+        disabled = []
+        for arg_name in ("use_doc_orientation_classify", "use_doc_unwarping"):
+            if arg_name in kwargs:
+                kwargs.pop(arg_name)
+                disabled.append(arg_name)
+        if disabled:
+            logger.info(
+                "当前管线未初始化 doc_preprocessor_pipeline，预测前跳过 %s。",
+                ", ".join(disabled),
+            )
+
     while True:
         try:
             return list(pipeline.predict(image_path, **kwargs))
