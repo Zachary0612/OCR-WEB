@@ -515,6 +515,10 @@ def _predict_structured(pipeline, image_path: str, profile: str = "layout"):
         Path(image_path).name,
         ", ".join(sorted(kwargs)) or "none",
     )
+    if profile == "vl":
+        import paddle as _paddle
+        _paddle.device.set_device(OCR_DEVICE)
+        logger.info("VL 预测前设置 paddle device: %s", OCR_DEVICE)
     started_at = time.perf_counter()
 
     while True:
@@ -654,6 +658,8 @@ def get_vl_pipeline():
         import os
         from paddlex import create_pipeline
         logger.info("正在初始化 PaddleOCR-VL-1.5 视觉语言模型管线 (device=%s)...", OCR_DEVICE)
+        import paddle as _paddle
+        _paddle.device.set_device(OCR_DEVICE)
         # VL 管线的 PP-DocLayoutV3 需要 JSON 格式模型，临时切换标志
         old_flag = os.environ.get("FLAGS_json_format_model")
         os.environ.pop("FLAGS_json_format_model", None)
