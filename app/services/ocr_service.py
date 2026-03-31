@@ -1,45 +1,60 @@
+import asyncio
 import gc
+import json
 import logging
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select, func, desc, or_
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.path_security import is_managed_upload_path
+from app.core.result_validation import normalize_result_pages, serialize_pages_text
 from app.core.ocr_engine import ocr_document
-from app.db.models import OCRTask
-from config import UPLOAD_DIR, ALLOWED_EXTENSIONS
+from app.db.models import ArchiveRecord, OCRTask
+from app.services.archive_service import save_archive_record
+from app.services.excel_export import (
+    append_to_excel,
+    clear_excel_data,
+    extract_fields,
+    init_excel,
+    resolve_excel_output_path,
+)
+from config import ALLOWED_EXTENSIONS, UPLOAD_DIR
+
 
 logger = logging.getLogger(__name__)
 
 
 async def save_upload_file(filename: str, file_content: bytes, relative_path: str = "") -> tuple[str, str]:
-    """
-    保存上传文件，返回 (存储路径, 文件类型)
-    """
     base_name = Path(filename).name
     ext = Path(base_name).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise ValueError(f"不支持的文件类型: {ext}，支持: {', '.join(ALLOWED_EXTENSIONS)}")
+        raise ValueError(f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
 
     rel_parts = []
-    for part in Path((relative_path or "").replace('\\', '/')).parts:
-        if part in ('', '.', '..'):
+    for part in Path((relative_path or "").replace("\\", "/")).parts:
+        if part in {"", ".", ".."}:
             continue
-        if len(part) == 2 and part[1] == ':':
+        if len(part) == 2 and part[1] == ":":
             continue
         rel_parts.append(part)
 
     save_dir = UPLOAD_DIR.joinpath(*rel_parts[:-1]) if rel_parts else UPLOAD_DIR
     save_dir.mkdir(parents=True, exist_ok=True)
-    unique_name = f"{uuid.uuid4().hex}_{base_name}"
-    save_path = save_dir / unique_name
+    save_path = save_dir / f"{uuid.uuid4().hex}_{base_name}"
     save_path.write_bytes(file_content)
     return str(save_path), ext
 
 
-async def create_task(db: AsyncSession, filename: str, file_path: str, file_type: str, mode: str = "layout") -> OCRTask:
-    """创建 OCR 任务"""
+async def create_task(
+    db: AsyncSession,
+    filename: str,
+    file_path: str,
+    file_type: str,
+    mode: str = "layout",
+) -> OCRTask:
     task = OCRTask(
         filename=filename,
         file_path=file_path,
@@ -53,38 +68,53 @@ async def create_task(db: AsyncSession, filename: str, file_path: str, file_type
     return task
 
 
+_MODE_TIMEOUT: dict[str, int] = {
+    "vl": 600,
+    "layout": 300,
+    "ocr": 120,
+}
+
+
 async def run_ocr_task(db: AsyncSession, task_id: int, mode: str = "layout") -> OCRTask:
-    """执行 OCR 任务 (mode: layout=版面解析+表格, ocr=基础识别)"""
     task = await db.get(OCRTask, task_id)
     if not task:
-        raise ValueError(f"任务不存在: {task_id}")
+        raise ValueError(f"Task not found: {task_id}")
 
     task.status = "processing"
+    task.error_message = None
     await db.commit()
 
+    timeout = _MODE_TIMEOUT.get(mode, 300)
     try:
-        result = ocr_document(task.file_path, mode=mode)
-
-        # 直接以 JSON 存储完整识别结果
-        task.result_json = result["pages"]
-        task.full_text = result["full_text"]
+        result = await asyncio.wait_for(
+            asyncio.to_thread(ocr_document, task.file_path, mode),
+            timeout=timeout,
+        )
+        pages = normalize_result_pages(result["pages"])
+        task.result_json = pages
+        task.full_text = serialize_pages_text(pages)
         task.page_count = result["page_count"]
         task.status = "done"
         await db.commit()
         await db.refresh(task)
-        logger.info("任务 %d 识别完成，共 %d 页", task.id, task.page_count)
-
-    except Exception as e:
-        logger.error("任务 %d 识别失败: %s", task.id, str(e))
+        logger.info("Task %s OCR finished with %s page(s).", task.id, task.page_count)
+    except asyncio.TimeoutError:
+        logger.error("Task %s OCR timed out after %ss (mode=%s).", task.id, timeout, mode)
         task.status = "failed"
-        task.error_message = str(e)
+        task.error_message = f"识别超时（>{timeout}s），请重新提交或改用其他识别模式。"
+        await db.commit()
+        await db.refresh(task)
+    except Exception as exc:
+        logger.exception("Task %s OCR failed.", task.id)
+        task.status = "failed"
+        task.error_message = str(exc)
         await db.commit()
         await db.refresh(task)
     finally:
-        # 强制释放内存，防止批量处理时 OOM
         gc.collect()
         try:
             import paddle
+
             paddle.device.cuda.empty_cache()
         except Exception:
             pass
@@ -92,13 +122,55 @@ async def run_ocr_task(db: AsyncSession, task_id: int, mode: str = "layout") -> 
     return task
 
 
-async def get_task_list(db: AsyncSession, page: int = 1, page_size: int = 20, folder: str = "") -> tuple[list[OCRTask], int]:
-    """获取任务列表（分页），可按源文件夹过滤"""
+async def finalize_task_outputs(
+    db: AsyncSession,
+    task: OCRTask,
+    *,
+    excel_path: str = "",
+    excel_init: int = 0,
+    output_dir: str = "",
+    batch_id: str = "",
+) -> OCRTask:
+    if task.status != "done":
+        return task
+
+    if output_dir:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = Path(task.filename or task.file_path).stem
+        (out_dir / f"{stem}.json").write_text(
+            json.dumps(task.result_json, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (out_dir / f"{stem}.txt").write_text(task.full_text or "", encoding="utf-8")
+
+    if excel_path:
+        actual_excel_path = resolve_excel_output_path(excel_path)
+        excel_file = Path(actual_excel_path)
+        if not excel_file.exists():
+            init_excel(actual_excel_path)
+        elif excel_init:
+            clear_excel_data(actual_excel_path)
+
+        fields = extract_fields(task.filename, task.full_text or "", task.result_json, task.page_count)
+        append_to_excel(actual_excel_path, fields)
+
+    fields = extract_fields(task.filename, task.full_text or "", task.result_json, task.page_count)
+    await save_archive_record(db, task.id, batch_id, str(Path(task.file_path).parent), fields)
+    await db.refresh(task)
+    return task
+
+
+async def get_task_list(
+    db: AsyncSession,
+    page: int = 1,
+    page_size: int = 20,
+    folder: str = "",
+) -> tuple[list[OCRTask], int]:
     from sqlalchemy import and_
+
     conditions = []
     if folder:
-        # 匹配该文件夹下的文件（file_path 居于此目录）
-        # 使用 starts_with() 替代 LIKE，避免 PostgreSQL LIKE 对 Windows \ 路径的转义问题
         base = folder.rstrip("/\\")
         conditions.append(
             or_(
@@ -107,28 +179,36 @@ async def get_task_list(db: AsyncSession, page: int = 1, page_size: int = 20, fo
             )
         )
 
-    base_q = select(func.count(OCRTask.id))
+    count_stmt = select(func.count(OCRTask.id))
     if conditions:
-        base_q = base_q.where(and_(*conditions))
-    total_result = await db.execute(base_q)
-    total = total_result.scalar() or 0
+        count_stmt = count_stmt.where(and_(*conditions))
+    total = (await db.execute(count_stmt)).scalar() or 0
 
-    stmt = select(OCRTask).order_by(desc(OCRTask.created_at)).offset((page - 1) * page_size).limit(page_size)
+    stmt = (
+        select(OCRTask)
+        .order_by(desc(OCRTask.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     if conditions:
         stmt = stmt.where(and_(*conditions))
-    result = await db.execute(stmt)
-    tasks = list(result.scalars().all())
+    tasks = list((await db.execute(stmt)).scalars().all())
     return tasks, total
 
 
 async def get_task_detail(db: AsyncSession, task_id: int) -> OCRTask | None:
-    """获取任务详情（含 JSON 识别结果）"""
     return await db.get(OCRTask, task_id)
 
 
-async def search_tasks(db: AsyncSession, keyword: str, page: int = 1, page_size: int = 20) -> tuple[list[OCRTask], int]:
-    """搜索任务：在 filename、full_text 和 result_json(含表格内容) 中模糊匹配"""
-    from sqlalchemy import or_, cast, String as SAString
+async def search_tasks(
+    db: AsyncSession,
+    keyword: str,
+    page: int = 1,
+    page_size: int = 20,
+) -> tuple[list[OCRTask], int]:
+    from sqlalchemy import String as SAString
+    from sqlalchemy import cast
+
     like_pattern = f"%{keyword}%"
     condition = or_(
         OCRTask.filename.ilike(like_pattern),
@@ -136,9 +216,7 @@ async def search_tasks(db: AsyncSession, keyword: str, page: int = 1, page_size:
         cast(OCRTask.result_json, SAString).ilike(like_pattern),
     )
 
-    total_result = await db.execute(select(func.count(OCRTask.id)).where(condition))
-    total = total_result.scalar() or 0
-
+    total = (await db.execute(select(func.count(OCRTask.id)).where(condition))).scalar() or 0
     stmt = (
         select(OCRTask)
         .where(condition)
@@ -146,23 +224,48 @@ async def search_tasks(db: AsyncSession, keyword: str, page: int = 1, page_size:
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
-    result = await db.execute(stmt)
-    tasks = list(result.scalars().all())
+    tasks = list((await db.execute(stmt)).scalars().all())
     return tasks, total
 
 
+def _safe_unlink(file_path: str) -> None:
+    if not is_managed_upload_path(file_path):
+        return
+    try:
+        Path(file_path).unlink(missing_ok=True)
+    except Exception:
+        logger.warning("Failed to remove managed upload file: %s", file_path, exc_info=True)
+
+
 async def delete_task(db: AsyncSession, task_id: int) -> bool:
-    """删除任务及其关联文件"""
     task = await db.get(OCRTask, task_id)
     if not task:
         return False
 
-    # 删除文件
-    try:
-        Path(task.file_path).unlink(missing_ok=True)
-    except Exception:
-        pass
-
+    _safe_unlink(task.file_path)
+    await db.execute(sa_delete(ArchiveRecord).where(ArchiveRecord.task_id == task.id))
     await db.delete(task)
     await db.commit()
     return True
+
+
+async def delete_tasks_by_folder(db: AsyncSession, folder: str) -> int:
+    base = folder.rstrip("/\\")
+    tasks_stmt = select(OCRTask).where(
+        or_(
+            func.starts_with(OCRTask.file_path, base + "\\"),
+            func.starts_with(OCRTask.file_path, base + "/"),
+        )
+    )
+    tasks = list((await db.execute(tasks_stmt)).scalars().all())
+    if not tasks:
+        return 0
+
+    task_ids = [task.id for task in tasks]
+    for task in tasks:
+        _safe_unlink(task.file_path)
+        await db.delete(task)
+
+    await db.execute(sa_delete(ArchiveRecord).where(ArchiveRecord.task_id.in_(task_ids)))
+    await db.commit()
+    return len(task_ids)
