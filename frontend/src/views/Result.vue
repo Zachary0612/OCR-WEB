@@ -187,7 +187,13 @@
                 </template>
 
                 <template v-else-if="item.type === 'table'">
+                  <div
+                    v-if="editingTableKey !== item._key && resolveTableHtml(item)"
+                    class="table-html-preview overflow-x-auto rounded-lg border border-gray-200 bg-white"
+                    v-html="resolveTableHtml(item)"
+                  />
                   <EditableTable
+                    v-else
                     :model-value="editingTableKey === item._key ? tableDraft : item.table_data"
                     :editing="editingTableKey === item._key"
                     @update:model-value="tableDraft = $event"
@@ -319,17 +325,65 @@ const { polling, start: startPolling, stop: stopPolling } = useTaskPolling(
 
 function buildPageItems(page, pageIndex) {
   if (page?.regions?.length) {
-    return page.regions.map((region, regionIndex) => ({
-      ...region,
-      content: region.content || '',
-      table_data: Array.isArray(region.table_data) ? region.table_data : [['']],
-      _key: `page-${pageIndex}-region-${regionIndex}`,
-      _pageIdx: pageIndex,
-      _regionIdx: regionIndex,
-    }))
+    return page.regions.map((region, regionIndex) => {
+      const html = resolveTableHtml(region)
+      const tableData = region.type === 'table' ? resolveTableData(region, html) : (Array.isArray(region.table_data) ? region.table_data : [['']])
+      const content = region.type === 'table'
+        ? (hasTableContent(tableData) ? tableDataToText(tableData) : (region.content || ''))
+        : (region.content || '')
+
+      return {
+        ...region,
+        html: html || region.html || null,
+        content,
+        table_data: tableData,
+        _key: `page-${pageIndex}-region-${regionIndex}`,
+        _pageIdx: pageIndex,
+        _regionIdx: regionIndex,
+      }
+    })
   }
 
   return buildOcrLineItems(page, pageIndex)
+}
+
+function looksLikeHtmlTable(value) {
+  if (typeof value !== 'string') return false
+  const lowered = value.toLowerCase()
+  return lowered.includes('<table') && lowered.includes('</table>')
+}
+
+function resolveTableHtml(region) {
+  if (!region || region.type !== 'table') return ''
+  if (looksLikeHtmlTable(region.html)) return region.html.trim()
+  if (looksLikeHtmlTable(region.content)) return region.content.trim()
+  return ''
+}
+
+function parseHtmlTableToData(html) {
+  if (!looksLikeHtmlTable(html) || typeof DOMParser === 'undefined') return null
+  const documentNode = new DOMParser().parseFromString(html, 'text/html')
+  const rows = Array.from(documentNode.querySelectorAll('tr'))
+    .map((row) => Array.from(row.querySelectorAll('th, td')).map((cell) => String(cell.textContent || '').replace(/\u00a0/g, ' ').trim()))
+    .filter((row) => row.length)
+  return rows.length ? rows : null
+}
+
+function hasTableContent(tableData) {
+  return Array.isArray(tableData) && tableData.some((row) => Array.isArray(row) && row.some((cell) => String(cell || '').trim()))
+}
+
+function resolveTableData(region, html = '') {
+  if (Array.isArray(region?.table_data) && region.table_data.length) {
+    return cloneTableData(region.table_data)
+  }
+
+  const parsed = parseHtmlTableToData(html || resolveTableHtml(region))
+  if (hasTableContent(parsed)) {
+    return cloneTableData(parsed)
+  }
+
+  return [['']]
 }
 
 function rectFromBBox(bbox) {
@@ -818,5 +872,33 @@ watch(pageNum, () => {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.table-html-preview :deep(table) {
+  width: 100%;
+  min-width: 640px;
+  border-collapse: collapse;
+  font-size: 13px;
+  color: rgb(55 65 81);
+}
+
+.table-html-preview :deep(th),
+.table-html-preview :deep(td) {
+  border: 1px solid rgb(229 231 235);
+  padding: 8px 10px;
+  vertical-align: top;
+  white-space: pre-wrap;
+}
+
+.table-html-preview :deep(th) {
+  background: rgb(248 250 252);
+  font-weight: 600;
 }
 </style>
