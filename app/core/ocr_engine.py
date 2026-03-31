@@ -55,6 +55,7 @@ _ocr_instance = None
 _layout_pipeline = None
 _vl_pipeline = None
 _UNSUPPORTED_PREDICT_ARG_RE = re.compile(r"unexpected keyword argument ['\"](?P<name>\w+)['\"]")
+_MISSING_DOC_PREPROCESSOR_RE = re.compile(r"doc_preprocessor_pipeline")
 
 
 def _require_fitz():
@@ -488,6 +489,24 @@ def _predict_structured(pipeline, image_path: str):
                 raise
             logger.warning("predict 参数 %s 当前不可用，自动回退。", arg_name)
             kwargs.pop(arg_name)
+        except Exception as exc:
+            message = str(exc)
+            if not _MISSING_DOC_PREPROCESSOR_RE.search(message):
+                raise
+
+            disabled = []
+            for arg_name in ("use_doc_orientation_classify", "use_doc_unwarping"):
+                if arg_name in kwargs:
+                    kwargs.pop(arg_name)
+                    disabled.append(arg_name)
+
+            if not disabled:
+                raise
+
+            logger.warning(
+                "当前管线缺少 doc_preprocessor_pipeline，已自动关闭 %s 后重试。",
+                ", ".join(disabled),
+            )
 
 
 def _rect_contains_point(rect: list[float], x: float, y: float) -> bool:
