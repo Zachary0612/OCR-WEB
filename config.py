@@ -43,10 +43,19 @@ def _load_local_env_file(path: Path) -> None:
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key:
                 os.environ[key] = value
     except OSError:
         return
+
+
+def _mask_secret(value: str, visible_prefix: int = 8, visible_suffix: int = 6) -> str:
+    secret = (value or "").strip()
+    if not secret:
+        return "<empty>"
+    if len(secret) <= visible_prefix + visible_suffix:
+        return "*" * min(len(secret), 8)
+    return f"{secret[:visible_prefix]}...{secret[-visible_suffix:]}"
 
 
 _load_local_env_file(BASE_DIR / ".env")
@@ -91,9 +100,14 @@ AUTH_SESSION_TTL = int(os.getenv("AUTH_SESSION_TTL", "28800"))
 MINIMAX_ENABLED = _env_flag("MINIMAX_ENABLED", False)
 MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1")
-MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "minimax-2.7")
+MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M2.7")
 MINIMAX_TIMEOUT_SECONDS = float(os.getenv("MINIMAX_TIMEOUT_SECONDS", "60"))
 MINIMAX_MAX_INPUT_CHARS = int(os.getenv("MINIMAX_MAX_INPUT_CHARS", "12000"))
+MINIMAX_BATCH_CONCURRENCY = max(1, int(os.getenv("MINIMAX_BATCH_CONCURRENCY", "20")))
+
+# Baidu AI Cloud API (文档解析 PaddleOCR-VL)
+BAIDU_API_KEY = os.getenv("BAIDU_API_KEY", "")
+BAIDU_SECRET_KEY = os.getenv("BAIDU_SECRET_KEY", "")
 
 # Local filesystem access
 LOCAL_PATH_ROOTS = _build_path_roots(

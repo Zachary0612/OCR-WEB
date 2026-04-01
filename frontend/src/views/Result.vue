@@ -26,6 +26,43 @@
 
     <div v-else-if="error" class="flex flex-1 items-center justify-center text-sm text-red-500">{{ error }}</div>
 
+    <div v-else-if="isTaskProcessing" class="flex flex-1 items-center justify-center bg-white px-6">
+      <div class="w-full max-w-lg rounded-2xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-6 py-8 text-center">
+        <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[var(--gov-primary-soft)] text-[var(--gov-primary)]">
+          <svg class="h-7 w-7 animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16 8 8 0 008-8h-4" /></svg>
+        </div>
+        <p class="mt-4 text-lg font-semibold text-[var(--gov-text)]">当前材料正在识别处理中</p>
+        <p class="mt-2 text-sm leading-7 gov-muted">
+          系统会在后台持续完成识别与结构整理，处理结束后会自动刷新当前页面。
+        </p>
+        <div class="mt-4 inline-flex items-center rounded-full border border-[var(--gov-border)] bg-white px-4 py-1.5 text-xs text-[var(--gov-text-muted)]">
+          当前状态：{{ statusLabel(task?.status) }}
+        </div>
+        <div class="mt-5 flex justify-center gap-3">
+          <button class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-2 text-sm text-[var(--gov-text)] hover:bg-slate-50" @click="router.push('/')">
+            返回工作台
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-else-if="isTaskFailed" class="flex flex-1 items-center justify-center bg-white px-6">
+      <div class="w-full max-w-lg rounded-2xl border border-red-200 bg-red-50 px-6 py-8 text-center">
+        <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-white text-red-500">
+          <svg class="h-7 w-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01" /><circle cx="12" cy="12" r="9" /></svg>
+        </div>
+        <p class="mt-4 text-lg font-semibold text-red-700">当前材料处理异常</p>
+        <p class="mt-2 text-sm leading-7 text-red-600">
+          {{ task?.error_message || '当前记录未能生成可展示的识别结果，请稍后重试或重新发起处理。' }}
+        </p>
+        <div class="mt-5 flex justify-center gap-3">
+          <button class="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm text-red-700 hover:bg-red-100" @click="router.push('/')">
+            返回工作台
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div v-else class="flex min-h-0 flex-1">
       <aside v-if="folderPath" class="flex w-56 flex-shrink-0 flex-col overflow-hidden border-r border-slate-800 bg-slate-950">
         <div class="border-b border-slate-800 px-3 py-2 text-xs font-medium text-slate-300">{{ folderLabel }}</div>
@@ -101,10 +138,10 @@
         <div class="flex flex-shrink-0 items-center justify-between border-b border-gray-100 px-4 py-2">
           <div class="flex items-center space-x-1">
             <button class="rounded px-3 py-1 text-xs font-medium transition" :class="activeTab === 'parsed' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100'" @click="activeTab = 'parsed'">
-              文档结果
+              识别结果
             </button>
             <button class="rounded px-3 py-1 text-xs font-medium transition" :class="activeTab === 'json' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100'" @click="activeTab = 'json'">
-              JSON
+              结构数据
             </button>
           </div>
           <div class="flex items-center space-x-1">
@@ -119,7 +156,7 @@
 
         <div v-if="activeTab === 'parsed'" class="flex-1 overflow-y-auto px-5 py-4">
           <div v-if="task?.status === 'failed'" class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm leading-6 text-red-600">
-            {{ task?.error_message || '识别失败，当前任务没有可展示结果。' }}
+            当前记录处理异常，暂时没有可展示内容，请稍后重试或重新发起处理。
           </div>
           <div v-else-if="!allItems.length" class="flex h-full items-center justify-center text-sm text-gray-400">暂无识别内容。</div>
           <div v-else class="space-y-2">
@@ -148,16 +185,16 @@
                 </template>
 
                 <template v-else>
-                <div class="mb-1.5 flex items-center justify-between">
+                <div v-if="showRegionHeader(item)" class="mb-1.5 flex items-center justify-between">
                   <span class="inline-block rounded px-2 py-0.5 text-xs font-medium" :class="labelClass(item.type)">
                     {{ labelName(item.type) }}
                   </span>
                   <div class="flex items-center space-x-1">
-                    <button class="rounded px-2 py-0.5 text-xs text-gray-500 transition hover:bg-white hover:text-blue-600" @click.stop="copyRegion(item)">
+                    <button v-if="item.type !== 'seal'" class="rounded px-2 py-0.5 text-xs text-gray-500 transition hover:bg-white hover:text-blue-600" @click.stop="copyRegion(item)">
                       复制
                     </button>
                     <button
-                      v-if="task?.status === 'done' && item.type !== 'table'"
+                      v-if="task?.status === 'done' && item.type !== 'table' && item.type !== 'seal' && item._editable !== false"
                       class="rounded px-2 py-0.5 text-xs text-gray-500 transition hover:bg-white hover:text-blue-600"
                       @click.stop="startTextEdit(item)"
                     >
@@ -190,13 +227,7 @@
                 </template>
 
                 <template v-else-if="item.type === 'table'">
-                  <div
-                    v-if="editingTableKey !== item._key && resolveTableHtml(item)"
-                    class="table-html-preview overflow-x-auto rounded-lg border border-gray-200 bg-white"
-                    v-html="resolveTableHtml(item)"
-                  />
                   <EditableTable
-                    v-else
                     :model-value="editingTableKey === item._key ? tableDraft : item.table_data"
                     :editing="editingTableKey === item._key"
                     @update:model-value="tableDraft = $event"
@@ -211,6 +242,19 @@
                   </div>
                 </template>
 
+                <template v-else-if="item._renderMode === 'region_formatted_text'">
+                  <div class="space-y-0.5">
+                    <div
+                      v-for="line in item._displayLines"
+                      :key="line._key"
+                      class="rounded-md px-2 py-1"
+                      :style="ocrLineContainerStyle(line)"
+                    >
+                      <p class="whitespace-pre-wrap text-gray-800" :style="ocrLineTextStyle(line)">{{ line.content }}</p>
+                    </div>
+                  </div>
+                </template>
+
                 <template v-else>
                   <div
                     v-if="showRegionPreview(item)"
@@ -219,7 +263,9 @@
                   >
                     <img :src="fileUrl" class="pointer-events-none max-w-none select-none" :style="cropImageStyle(item)" />
                   </div>
-                  <p class="whitespace-pre-wrap text-sm leading-6 text-gray-700">{{ item.content }}</p>
+                  <p v-if="itemBodyText(item)" class="whitespace-pre-wrap text-sm leading-6 text-gray-700">{{ itemBodyText(item) }}</p>
+                  <p v-else-if="item.type === 'seal'" class="text-xs tracking-wide text-gray-400">印章区域</p>
+                  <p v-else class="whitespace-pre-wrap text-sm leading-6 text-gray-700">{{ item.content }}</p>
                 </template>
                 </template>
               </div>
@@ -240,13 +286,11 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import dayjs from 'dayjs'
 
 import EditableTable from '../components/EditableTable.vue'
-import { getTask, getTaskFileUrl, getTasks, updateTask } from '../api/ocr.js'
-import { useTaskPolling } from '../composables/useTaskPolling.js'
+import { useResultViewState } from '../composables/useResultViewState.js'
 
 const props = defineProps({
   id: {
@@ -258,50 +302,64 @@ const props = defineProps({
 const router = useRouter()
 const route = useRoute()
 
-const task = ref(null)
-const resultData = ref({ pages: [] })
-const loading = ref(true)
-const error = ref('')
-const toast = ref('')
-const activeTab = ref('parsed')
-const activeKey = ref('')
-const pageNum = ref(1)
-
-const folderTasks = ref([])
-const folderLoading = ref(false)
-const regionRefs = ref({})
-
-const editingKey = ref('')
-const editText = ref('')
-const editingTableKey = ref('')
-const tableDraft = ref([['']])
-
-const previewImg = ref(null)
-const imgW = ref(0)
-const imgH = ref(0)
-const natW = ref(0)
-const natH = ref(0)
-
-const fileUrl = computed(() => getTaskFileUrl(props.id))
-const folderPath = computed(() => String(route.query.folder || ''))
-const folderLabel = computed(() => {
-  const normalized = folderPath.value.replace(/\\/g, '/')
-  return normalized.split('/').filter(Boolean).pop() || folderPath.value
+const taskIdRef = computed(() => props.id)
+const {
+  task,
+  resultData,
+  loading,
+  error,
+  toast,
+  activeTab,
+  activeKey,
+  pageNum,
+  folderTasks,
+  folderLoading,
+  regionRefs,
+  editingKey,
+  editText,
+  editingTableKey,
+  tableDraft,
+  previewImg,
+  imgW,
+  imgH,
+  natW,
+  natH,
+  fileUrl,
+  folderPath,
+  folderLabel,
+  pages,
+  totalPages,
+  isPdf,
+  jsonText,
+  modeLabel,
+  modeClass,
+  currentPage,
+  polling,
+  formatTime,
+  showToast,
+  statusLabel,
+  statusClass,
+  switchTask,
+  copyRegion,
+  copyAll,
+  downloadTxt,
+  setRegionRef,
+  startTextEdit,
+  cancelTextEdit,
+  startTableEdit,
+  cancelTableEdit,
+  cloneTableData,
+  tableDataToText,
+  saveTextEdit,
+  saveTableEdit,
+} = useResultViewState({
+  taskId: taskIdRef,
+  route,
+  router,
 })
-const pages = computed(() => resultData.value?.pages || [])
-const totalPages = computed(() => pages.value.length || 1)
-const isPdf = computed(() => String(task.value?.file_type || '').toLowerCase() === '.pdf')
-const jsonText = computed(() => JSON.stringify(resultData.value, null, 2))
-const modeLabel = computed(() => ({ vl: 'PaddleOCR-VL-1.5', layout: '版面解析', ocr: '纯文本 OCR' }[task.value?.mode] || ''))
-const modeClass = computed(() => ({
-  vl: 'bg-indigo-100 text-indigo-700',
-  layout: 'bg-blue-100 text-blue-700',
-  ocr: 'bg-green-100 text-green-700',
-}[task.value?.mode] || 'bg-gray-100 text-gray-700'))
 
-const currentPage = computed(() => pages.value[pageNum.value - 1] || { regions: [], lines: [] })
 
-const currentPreviewItems = computed(() => buildPageItems(currentPage.value, pageNum.value - 1))
+const currentPreviewItems = computed(() => buildPreviewItems(currentPage.value, pageNum.value - 1))
 const allItems = computed(() =>
   pages.value.flatMap((page, pageIndex) => {
     const items = []
@@ -315,40 +373,220 @@ const allItems = computed(() =>
     return [...items, ...buildPageItems(page, pageIndex)]
   })
 )
+const isTaskProcessing = computed(() => ['pending', 'processing'].includes(String(task.value?.status || '')))
+const isTaskFailed = computed(() => String(task.value?.status || '') === 'failed')
 
-const { polling, start: startPolling, stop: stopPolling } = useTaskPolling(
-  async () => {
-    const { data } = await getTask(props.id)
-    return data
-  },
-  (data) => {
-    applyTask(data)
+function isStructuredTextRegion(type) {
+  return !['table', 'seal', 'figure', 'image', 'chart'].includes(String(type || 'text'))
+}
+
+function isPlainTextDisplayType(type) {
+  return ['text', 'other_text', 'paragraph', 'number'].includes(String(type || 'text'))
+}
+
+function displayRegionType(type) {
+  return isPlainTextDisplayType(type) ? 'text' : String(type || 'text')
+}
+
+function regionSourceIndices(region) {
+  if (Array.isArray(region?.__sourceIndices) && region.__sourceIndices.length) {
+    return region.__sourceIndices.filter((value) => value !== undefined && value !== null)
   }
-)
+  if (region?.__sourceIndex !== undefined && region?.__sourceIndex !== null) {
+    return [region.__sourceIndex]
+  }
+  return []
+}
+
+function mergeRects(leftRect, rightRect) {
+  if (!Array.isArray(leftRect) || leftRect.length < 4) return Array.isArray(rightRect) ? [...rightRect] : []
+  if (!Array.isArray(rightRect) || rightRect.length < 4) return [...leftRect]
+  return [
+    Math.min(Number(leftRect[0]) || 0, Number(rightRect[0]) || 0),
+    Math.min(Number(leftRect[1]) || 0, Number(rightRect[1]) || 0),
+    Math.max(Number(leftRect[2]) || 0, Number(rightRect[2]) || 0),
+    Math.max(Number(leftRect[3]) || 0, Number(rightRect[3]) || 0),
+  ]
+}
+
+function regionLinePayloads(region) {
+  if (Array.isArray(region?.region_lines) && region.region_lines.length) {
+    return region.region_lines.map((line, index) => ({
+      line_num: Number(line?.line_num) || index + 1,
+      text: String(line?.text || ''),
+      confidence: Number(line?.confidence) || 0,
+      bbox: Array.isArray(line?.bbox) ? JSON.parse(JSON.stringify(line.bbox)) : [],
+      bbox_type: line?.bbox_type || (Array.isArray(line?.bbox?.[0]) ? 'poly' : 'rect'),
+    }))
+  }
+
+  const rect = regionDisplayRect(region)
+  const text = String(region?.content || '').trim()
+  if (!text || rect.length < 4) return []
+  return [
+    {
+      line_num: 1,
+      text,
+      confidence: 0,
+      bbox: [...rect],
+      bbox_type: 'rect',
+    },
+  ]
+}
+
+function mergeRegionContents(regions) {
+  const lines = []
+  for (const region of regions) {
+    const chunks = String(region?.content || '')
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    for (const chunk of chunks) {
+      if (!lines.length || lines[lines.length - 1] !== chunk) {
+        lines.push(chunk)
+      }
+    }
+  }
+  return lines.join('\n')
+}
+
+function shouldMergeTextRegions(previousRegion, currentRegion) {
+  if (!previousRegion || !currentRegion) return false
+  if (!isPlainTextDisplayType(previousRegion.type) || !isPlainTextDisplayType(currentRegion.type)) return false
+
+  const previousRect = regionDisplayRect(previousRegion)
+  const currentRect = regionDisplayRect(currentRegion)
+  if (previousRect.length < 4 || currentRect.length < 4) return false
+
+  const previousHeight = Math.max(1, (previousRect[3] || 0) - (previousRect[1] || 0))
+  const currentHeight = Math.max(1, (currentRect[3] || 0) - (currentRect[1] || 0))
+  const gap = (currentRect[1] || 0) - (previousRect[3] || 0)
+  if (gap < -4 || gap > Math.max(10, Math.min(previousHeight, currentHeight) * 0.6)) return false
+
+  const previousWidth = Math.max(1, (previousRect[2] || 0) - (previousRect[0] || 0))
+  const currentWidth = Math.max(1, (currentRect[2] || 0) - (currentRect[0] || 0))
+  const overlapWidth = Math.max(0, Math.min(previousRect[2] || 0, currentRect[2] || 0) - Math.max(previousRect[0] || 0, currentRect[0] || 0))
+  const horizontalOverlap = overlapWidth / Math.min(previousWidth, currentWidth)
+  const leftDiff = Math.abs((previousRect[0] || 0) - (currentRect[0] || 0))
+  if (horizontalOverlap < 0.55 && leftDiff > Math.max(previousHeight, currentHeight) * 1.2 + 8) return false
+
+  const previousText = String(previousRegion?.content || '').trim()
+  const currentText = String(currentRegion?.content || '').trim()
+  if (!previousText || !currentText) return false
+
+  const hasContinuationCue = /[，、：（(]$/.test(previousText) || /^[）).,，、：;；]/.test(currentText)
+  const longLine = compactText(previousText).length >= 18 || compactText(currentText).length >= 18
+  const narrowGap = gap <= Math.max(6, Math.min(previousHeight, currentHeight) * 0.35)
+  const alignedBand = leftDiff <= Math.max(14, Math.min(previousHeight, currentHeight) * 1.1)
+
+  return alignedBand && (hasContinuationCue || (longLine && narrowGap) || (horizontalOverlap >= 0.86 && narrowGap))
+}
+
+function mergeDisplayRegions(regions) {
+  if (!Array.isArray(regions) || !regions.length) return []
+
+  const merged = []
+  for (const region of regions) {
+    const normalized = {
+      ...region,
+      type: displayRegionType(region?.type),
+      __sourceIndices: regionSourceIndices(region),
+    }
+
+    const previous = merged[merged.length - 1]
+    if (shouldMergeTextRegions(previous, normalized)) {
+      const previousLines = regionLinePayloads(previous)
+      const currentLines = regionLinePayloads(normalized)
+      const nextRects = mergeRects(regionDisplayRect(previous), regionDisplayRect(normalized))
+      previous.content = mergeRegionContents([previous, normalized])
+      previous.layout_bbox = nextRects
+      previous.bbox = nextRects
+      previous.bbox_type = 'rect'
+      previous.region_lines = [...previousLines, ...currentLines]
+      previous.__sourceIndices = [...new Set([...regionSourceIndices(previous), ...regionSourceIndices(normalized)])]
+      continue
+    }
+
+    merged.push(normalized)
+  }
+
+  return merged
+}
 
 function buildPageItems(page, pageIndex) {
   if (page?.regions?.length) {
-    return filterDisplayRegions(page.regions).map((region, regionIndex) => {
-      const html = resolveTableHtml(region)
-      const tableData = region.type === 'table' ? resolveTableData(region, html) : (Array.isArray(region.table_data) ? region.table_data : [['']])
-      const regionContent = region.type === 'seal' ? normalizeSealDisplayContent(region.content) : (region.content || '')
-      const content = region.type === 'table'
+    const indexedRegions = page.regions.map((region, index) => ({ ...region, __sourceIndex: index }))
+    return mergeDisplayRegions(filterDisplayRegions(indexedRegions)).map((region, regionIndex) => {
+      const { __sourceIndex, __sourceIndices, ...rawRegion } = region
+      const sourceIndices = Array.isArray(__sourceIndices) && __sourceIndices.length
+        ? __sourceIndices
+        : (__sourceIndex !== undefined ? [__sourceIndex] : [])
+      const primaryRegionIndex = sourceIndices.length === 1 ? sourceIndices[0] : undefined
+      const html = resolveTableHtml(rawRegion)
+      const tableData = rawRegion.type === 'table' ? resolveTableData(rawRegion, html) : (Array.isArray(rawRegion.table_data) ? rawRegion.table_data : [['']])
+      const regionContent = rawRegion.type === 'seal' ? '' : (rawRegion.content || '')
+      const displayLines = isStructuredTextRegion(rawRegion.type)
+        ? buildFormattedLineItems(rawRegion.region_lines, {
+          keyPrefix: `page-${pageIndex}-region-${sourceIndices.join('-') || regionIndex}-line`,
+          pageIndex,
+          baseRect: regionDisplayRect(rawRegion),
+        })
+        : []
+      const content = rawRegion.type === 'table'
         ? (hasTableContent(tableData) ? tableDataToText(tableData) : regionContent)
         : regionContent
 
       return {
-        ...region,
-        html: html || region.html || null,
+        ...rawRegion,
+        html: html || rawRegion.html || null,
         content,
         table_data: tableData,
-        _key: `page-${pageIndex}-region-${regionIndex}`,
+        __sourceIndices: sourceIndices,
+        _renderMode: displayLines.length ? 'region_formatted_text' : '',
+        _displayLines: displayLines,
+        _key: `page-${pageIndex}-region-${sourceIndices.join('-') || regionIndex}`,
         _pageIdx: pageIndex,
-        _regionIdx: regionIndex,
+        _regionIdx: primaryRegionIndex,
+        _editable: sourceIndices.length <= 1,
       }
     })
   }
 
   return buildOcrLineItems(page, pageIndex)
+}
+
+function buildPreviewItems(page, pageIndex) {
+  if (!page?.regions?.length) {
+    return buildOcrLineItems(page, pageIndex)
+  }
+
+  const displayItems = buildPageItems(page, pageIndex)
+  const sourceRegions = (page.regions || []).map((region, index) => ({
+    ...region,
+    type: displayRegionType(region?.type),
+    _pageIdx: pageIndex,
+    _regionIdx: index,
+    __sourceIndex: index,
+  }))
+
+  return displayItems.flatMap((item) => {
+    const sourceIndices = regionSourceIndices(item)
+    if (!sourceIndices.length) {
+      return [{ ...item, _targetKey: item._key }]
+    }
+
+    return sourceIndices
+      .map((sourceIndex, index) => {
+        const sourceRegion = sourceRegions[sourceIndex]
+        if (!sourceRegion) return null
+        return {
+          ...sourceRegion,
+          _key: `${item._key}-preview-${index}`,
+          _targetKey: item._key,
+        }
+      })
+      .filter(Boolean)
+  })
 }
 
 function looksLikeHtmlTable(value) {
@@ -377,14 +615,38 @@ function hasTableContent(tableData) {
   return Array.isArray(tableData) && tableData.some((row) => Array.isArray(row) && row.some((cell) => String(cell || '').trim()))
 }
 
+const HTML_IMAGE_TAG_RE = /<img\b[^>]*>/gi
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*]\([^)]+\)/g
+
+function sanitizeTableCell(cell) {
+  return String(cell || '')
+    .replace(HTML_IMAGE_TAG_RE, ' ')
+    .replace(MARKDOWN_IMAGE_RE, ' ')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function normalizeMergedTableRows(tableData) {
+  if (!Array.isArray(tableData)) return [['']]
+  return tableData.map((row) => {
+    const normalizedRow = (Array.isArray(row) ? row : [row]).map((cell) => sanitizeTableCell(cell))
+    const nonEmpty = normalizedRow.filter((cell) => cell)
+    if (nonEmpty.length >= 3 && new Set(nonEmpty).size === 1) {
+      return [nonEmpty[0], ...Array(Math.max(0, normalizedRow.length - 1)).fill('')]
+    }
+    return normalizedRow
+  })
+}
+
 function resolveTableData(region, html = '') {
   if (Array.isArray(region?.table_data) && region.table_data.length) {
-    return cloneTableData(region.table_data)
+    return normalizeMergedTableRows(cloneTableData(region.table_data))
   }
 
   const parsed = parseHtmlTableToData(html || resolveTableHtml(region))
   if (hasTableContent(parsed)) {
-    return cloneTableData(parsed)
+    return normalizeMergedTableRows(cloneTableData(parsed))
   }
 
   return [['']]
@@ -392,6 +654,33 @@ function resolveTableData(region, html = '') {
 
 function compactText(value) {
   return String(value || '').replace(/\s+/g, '')
+}
+
+function textSimilarity(leftValue, rightValue) {
+  const left = compactText(leftValue)
+  const right = compactText(rightValue)
+  if (!left || !right) return 0
+  if (left === right) return 1
+  if (left.includes(right) || right.includes(left)) return 0.92
+  if (left.length < 2 || right.length < 2) return 0
+
+  const pairs = new Map()
+  for (let index = 0; index < left.length - 1; index += 1) {
+    const pair = left.slice(index, index + 2)
+    pairs.set(pair, (pairs.get(pair) || 0) + 1)
+  }
+
+  let overlap = 0
+  for (let index = 0; index < right.length - 1; index += 1) {
+    const pair = right.slice(index, index + 2)
+    const count = pairs.get(pair) || 0
+    if (count > 0) {
+      overlap += 1
+      pairs.set(pair, count - 1)
+    }
+  }
+
+  return (2 * overlap) / ((left.length - 1) + (right.length - 1))
 }
 
 function rectArea(rect) {
@@ -436,6 +725,57 @@ function normalizeSealDisplayContent(content) {
   return joined
 }
 
+function sealDisplayText(content) {
+  return ''
+}
+
+function itemBodyText(item) {
+  if (item?.type === 'seal') {
+    return sealDisplayText(item?.content)
+  }
+  return String(item?.content || '')
+}
+
+function tableTextFromRegion(region) {
+  const html = resolveTableHtml(region)
+  const tableData = resolveTableData(region, html)
+  if (hasTableContent(tableData)) {
+    return compactText(tableDataToText(tableData))
+  }
+  return compactText(region?.content || html)
+}
+
+function tableRegionScore(region) {
+  const html = resolveTableHtml(region)
+  const tableData = resolveTableData(region, html)
+  let score = 0
+  if (hasTableContent(tableData)) {
+    const nonEmpty = tableData.reduce((sum, row) => sum + row.filter((cell) => String(cell || '').trim()).length, 0)
+    const maxCols = tableData.reduce((maxValue, row) => Math.max(maxValue, Array.isArray(row) ? row.length : 0), 0)
+    score += Math.min(nonEmpty, 60) * 0.12
+    score += Math.min(tableData.length, 20) * 0.08
+    score += Math.min(maxCols, 12) * 0.14
+  }
+  if (html) score += 1.5
+  score += Math.min(tableTextFromRegion(region).length, 180) / 90
+  return score
+}
+
+function tableRegionsLookDuplicated(region, other) {
+  const overlapRatio = overlapOnSmaller(regionDisplayRect(region), regionDisplayRect(other))
+  if (overlapRatio >= 0.92) return true
+
+  const regionText = tableTextFromRegion(region)
+  const otherText = tableTextFromRegion(other)
+  if (overlapRatio >= 0.72) {
+    if (!regionText || !otherText) return true
+    if (regionText.includes(otherText) || otherText.includes(regionText)) return true
+    if (textSimilarity(regionText, otherText) >= 0.88) return true
+  }
+
+  return overlapRatio >= 0.58 && regionText && otherText && textSimilarity(regionText, otherText) >= 0.96
+}
+
 function filterDisplayRegions(regions) {
   if (!Array.isArray(regions) || !regions.length) return []
 
@@ -448,26 +788,32 @@ function filterDisplayRegions(regions) {
     const regionText = compactText(type === 'seal' ? normalizeSealDisplayContent(region?.content) : region?.content)
 
     if (type === 'table') {
-      const html = resolveTableHtml(region)
-      const tableData = resolveTableData(region, html)
-      const tableText = compactText(hasTableContent(tableData) ? tableDataToText(tableData) : (region?.content || html))
-      const duplicated = keptTables.some((table) => {
-        if (overlapOnSmaller(rect, table.rect) < 0.82) return false
-        if (!tableText || !table.text) return true
-        return tableText.includes(table.text) || table.text.includes(tableText)
-      })
-
-      if (duplicated) continue
+      const duplicateIndex = keptTables.findIndex((table) => tableRegionsLookDuplicated(region, table.region))
+      if (duplicateIndex !== -1) {
+        const candidateScore = tableRegionScore(region)
+        if (candidateScore > keptTables[duplicateIndex].score) {
+          const keptIndex = keptTables[duplicateIndex].index
+          kept[keptIndex] = region
+          keptTables[duplicateIndex] = {
+            region,
+            rect,
+            text: tableTextFromRegion(region),
+            score: candidateScore,
+            index: keptIndex,
+          }
+        }
+        continue
+      }
 
       kept.push(region)
-      keptTables.push({ rect, text: tableText })
+      keptTables.push({ region, rect, text: tableTextFromRegion(region), score: tableRegionScore(region), index: kept.length - 1 })
       continue
     }
 
     if (['text', 'paragraph', 'number'].includes(type) && regionText) {
       const coveredByTable = keptTables.some((table) => {
         if (overlapOnSmaller(rect, table.rect) < 0.88) return false
-        return !table.text || table.text.includes(regionText)
+        return !table.text || table.text.includes(regionText) || regionText.includes(table.text)
       })
 
       if (coveredByTable) continue
@@ -491,22 +837,27 @@ function rectFromBBox(bbox) {
   return []
 }
 
-function buildOcrLineItems(page, pageIndex) {
-  const rawLines = (page?.lines || []).map((line, lineIndex) => {
+function buildFormattedLineItems(rawLines, options = {}) {
+  const { keyPrefix = 'line', pageIndex = 0, baseRect = [] } = options
+  const baseRectValue = Array.isArray(baseRect) && baseRect.length >= 4
+    ? baseRect.slice(0, 4).map((value) => Number(value) || 0)
+    : []
+
+  const normalizedLines = (rawLines || []).map((line, lineIndex) => {
     const rect = rectFromBBox(line.bbox || [])
     return {
       type: 'text',
       content: line.text || '',
       bbox: line.bbox || [],
       bbox_type: line.bbox_type || (Array.isArray(line.bbox?.[0]) ? 'poly' : 'rect'),
-      _key: `page-${pageIndex}-line-${lineIndex}`,
+      _key: `${keyPrefix}-${lineIndex}`,
       _pageIdx: pageIndex,
       _lineIdx: lineIndex,
       _rect: rect,
     }
   })
 
-  const lines = [...rawLines].sort((a, b) => {
+  const lines = [...normalizedLines].sort((a, b) => {
     const ay = a._rect[1] ?? 0
     const by = b._rect[1] ?? 0
     if (Math.abs(ay - by) > 4) return ay - by
@@ -530,13 +881,13 @@ function buildOcrLineItems(page, pageIndex) {
     }))
   }
 
-  const pageLeft = Math.min(...rects.map((rect) => rect[0]))
-  const pageTop = Math.min(...rects.map((rect) => rect[1]))
-  const pageRight = Math.max(...rects.map((rect) => rect[2]))
+  const pageLeft = baseRectValue.length ? baseRectValue[0] : Math.min(...rects.map((rect) => rect[0]))
+  const pageTop = baseRectValue.length ? baseRectValue[1] : Math.min(...rects.map((rect) => rect[1]))
+  const pageRight = baseRectValue.length ? Math.max(baseRectValue[2], ...rects.map((rect) => rect[2])) : Math.max(...rects.map((rect) => rect[2]))
   const pageWidth = Math.max(1, pageRight - pageLeft)
   const avgHeight = rects.reduce((sum, rect) => sum + Math.max(1, rect[3] - rect[1]), 0) / rects.length
 
-  let prevBottom = pageTop
+  let prevBottom = baseRectValue.length ? baseRectValue[1] : pageTop
   return lines.map((line, index) => {
     const rect = line._rect
     if (rect.length < 4) {
@@ -579,72 +930,11 @@ function buildOcrLineItems(page, pageIndex) {
   })
 }
 
-function applyTask(data) {
-  task.value = data
-  resultData.value = data.result_data || { pages: [] }
-  if (pageNum.value > totalPages.value) {
-    pageNum.value = 1
-  }
-}
-
-async function fetchTask() {
-  loading.value = true
-  error.value = ''
-  stopPolling()
-  try {
-    const { data } = await getTask(props.id)
-    applyTask(data)
-    if (!['done', 'failed'].includes(data.status)) {
-      await startPolling()
-    }
-  } catch (requestError) {
-    error.value = requestError.response?.data?.detail || '结果加载失败。'
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadFolderTasks() {
-  if (!folderPath.value) {
-    folderTasks.value = []
-    return
-  }
-  folderLoading.value = true
-  try {
-    const { data } = await getTasks(1, 500, folderPath.value)
-    folderTasks.value = [...(data.tasks || [])].reverse()
-  } catch (_) {
-    folderTasks.value = []
-  } finally {
-    folderLoading.value = false
-  }
-}
-
-function showToast(message) {
-  toast.value = message
-  window.setTimeout(() => {
-    if (toast.value === message) {
-      toast.value = ''
-    }
-  }, 1800)
-}
-
-function statusLabel(status) {
-  return {
-    done: '已完成',
-    failed: '失败',
-    processing: '处理中',
-    pending: '排队中',
-  }[status] || status || '未知'
-}
-
-function statusClass(status) {
-  return {
-    done: 'bg-green-100 text-green-700',
-    failed: 'bg-red-100 text-red-700',
-    processing: 'bg-amber-100 text-amber-700',
-    pending: 'bg-slate-100 text-slate-600',
-  }[status] || 'bg-slate-100 text-slate-600'
+function buildOcrLineItems(page, pageIndex) {
+  return buildFormattedLineItems(page?.lines || [], {
+    keyPrefix: `page-${pageIndex}-line`,
+    pageIndex,
+  })
 }
 
 function labelName(type) {
@@ -658,7 +948,9 @@ function labelName(type) {
     image: '图片',
     chart: '图表',
     text: '文本',
+    other_text: '文本',
     paragraph: '文本',
+    number: '文本',
     header: '页眉',
     footer: '页脚',
   }[type] || type
@@ -670,6 +962,15 @@ function labelClass(type) {
   if (['title', 'doc_title', 'paragraph_title'].includes(type)) return 'bg-blue-600 text-white'
   if (['figure', 'image', 'chart'].includes(type)) return 'bg-pink-100 text-pink-700'
   return 'bg-gray-100 text-gray-600'
+}
+
+function showRegionHeader(item) {
+  if (!isPlainTextDisplayType(item?.type)) return true
+  return activeKey.value === item._key || editingKey.value === item._key || editingTableKey.value === item._key
+}
+
+function overlayTargetKey(item) {
+  return item?._targetKey || item?._key
 }
 
 function regionPalette(type) {
@@ -707,16 +1008,16 @@ function regionPalette(type) {
 
 function regionFill(item) {
   const palette = regionPalette(item.type)
-  return activeKey.value === item._key ? palette.activeFill : palette.fill
+  return activeKey.value === overlayTargetKey(item) ? palette.activeFill : palette.fill
 }
 
 function regionStroke(item) {
   const palette = regionPalette(item.type)
-  return activeKey.value === item._key ? palette.activeStroke : palette.stroke
+  return activeKey.value === overlayTargetKey(item) ? palette.activeStroke : palette.stroke
 }
 
 function regionStrokeWidth(item) {
-  return activeKey.value === item._key ? 2.5 : 1.2
+  return activeKey.value === overlayTargetKey(item) ? 2.5 : 1.2
 }
 
 function ocrLineContainerStyle(item) {
@@ -806,10 +1107,6 @@ function cropImageStyle(item) {
   }
 }
 
-function formatTime(value) {
-  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
-}
-
 function onImgLoad() {
   const image = previewImg.value
   if (!image) return
@@ -823,128 +1120,8 @@ function selectItem(item) {
   if (item._pageIdx !== undefined && item._pageIdx + 1 !== pageNum.value) {
     pageNum.value = item._pageIdx + 1
   }
-  activeKey.value = item._key
+  activeKey.value = overlayTargetKey(item)
 }
-
-function switchTask(taskId) {
-  if (String(taskId) === String(props.id)) return
-  router.push(`/result/${taskId}?folder=${encodeURIComponent(folderPath.value)}`)
-}
-
-function copyRegion(item) {
-  navigator.clipboard.writeText(item.content || '').then(() => showToast('已复制当前区域。'))
-}
-
-function copyAll() {
-  navigator.clipboard.writeText(task.value?.full_text || '').then(() => showToast('已复制全文。'))
-}
-
-function downloadTxt() {
-  const blob = new Blob([task.value?.full_text || ''], { type: 'text/plain;charset=utf-8' })
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(blob)
-  link.download = `${task.value?.filename || 'result'}.txt`
-  link.click()
-}
-
-function setRegionRef(key, element) {
-  if (element) {
-    regionRefs.value[key] = element
-  } else {
-    delete regionRefs.value[key]
-  }
-}
-
-function startTextEdit(item) {
-  editingTableKey.value = ''
-  editingKey.value = item._key
-  editText.value = item.content || ''
-}
-
-function cancelTextEdit() {
-  editingKey.value = ''
-  editText.value = ''
-}
-
-function startTableEdit(item) {
-  editingKey.value = ''
-  editingTableKey.value = item._key
-  tableDraft.value = cloneTableData(item.table_data)
-}
-
-function cancelTableEdit() {
-  editingTableKey.value = ''
-  tableDraft.value = [['']]
-}
-
-function cloneTableData(tableData) {
-  return Array.isArray(tableData) && tableData.length
-    ? tableData.map((row) => (Array.isArray(row) && row.length ? [...row] : ['']))
-    : [['']]
-}
-
-function tableDataToText(tableData) {
-  return tableData
-    .map((row) => row.map((cell) => String(cell || '')).join('\t').trim())
-    .filter(Boolean)
-    .join('\n')
-}
-
-async function persistPages(successMessage) {
-  const { data } = await updateTask(props.id, { result_json: resultData.value.pages })
-  applyTask(data)
-  showToast(successMessage)
-}
-
-async function saveTextEdit(item) {
-  const page = resultData.value.pages[item._pageIdx]
-  if (!page) return
-
-  if (item._regionIdx !== undefined && page.regions?.[item._regionIdx]) {
-    page.regions[item._regionIdx].content = editText.value
-  } else if (item._lineIdx !== undefined && page.lines?.[item._lineIdx]) {
-    page.lines[item._lineIdx].text = editText.value
-  }
-
-  try {
-    await persistPages('文本已保存。')
-    cancelTextEdit()
-  } catch (requestError) {
-    showToast(requestError.response?.data?.detail || '保存失败。')
-  }
-}
-
-async function saveTableEdit(item) {
-  const page = resultData.value.pages[item._pageIdx]
-  if (!page?.regions?.[item._regionIdx]) return
-  page.regions[item._regionIdx].table_data = cloneTableData(tableDraft.value)
-  page.regions[item._regionIdx].content = tableDataToText(tableDraft.value)
-
-  try {
-    await persistPages('表格已保存。')
-    cancelTableEdit()
-  } catch (requestError) {
-    showToast(requestError.response?.data?.detail || '保存失败。')
-  }
-}
-
-onMounted(async () => {
-  await fetchTask()
-  await loadFolderTasks()
-})
-
-watch(
-  () => props.id,
-  async () => {
-    pageNum.value = 1
-    activeKey.value = ''
-    cancelTextEdit()
-    cancelTableEdit()
-    await fetchTask()
-  }
-)
-
-watch(folderPath, loadFolderTasks)
 
 watch(activeKey, async (key) => {
   await nextTick()

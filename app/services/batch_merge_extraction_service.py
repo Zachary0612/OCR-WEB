@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -10,19 +12,27 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.redis_cache import cache_get, cache_set
+from app.core.redis_cache import cache_delete, cache_get, cache_set
 from app.db.models import ArchiveRecord, OCRTask
 from app.services.excel_export import extract_fields
 from app.services.llm_field_extraction_service import (
+    ARCHIVE_FIELDS,
+    MiniMaxServiceError,
+    build_agreement_summary,
     call_minimax_same_document_judgement,
     compare_rule_and_llm_fields_for_content,
 )
+from config import MINIMAX_BATCH_CONCURRENCY
+
+logger = logging.getLogger(__name__)
 
 
 SAME_DOCUMENT_CONFIDENCE_THRESHOLD = 0.90
 TITLE_STRONG_MATCH_THRESHOLD = 0.97
 TITLE_HINT_THRESHOLD = 0.62
 FILENAME_HINT_THRESHOLD = 0.78
+SERIES_NEIGHBOR_DISTANCE = 2
+NEARBY_CANDIDATE_DISTANCE = 1
 MISSING_TEXT_REASON = "Task full_text is empty."
 NOT_DONE_REASON = "Task is not finished yet."
 MERGE_CACHE_PREFIX = "batch_ai_merge:"
@@ -32,7 +42,7 @@ _PUNCT_PATTERN = re.compile(r"[\s,.;:!?\-_/\\，。；：！？（）()《》【
 _FILENAME_SEQ_PATTERNS = [
     re.compile(r"第\s*(\d+)\s*(?:册|卷|部分|篇)"),
     re.compile(r"(?:part|vol|volume|册|卷|p)[\s_-]*(\d+)", re.IGNORECASE),
-    re.compile(r"(?:^|[_\-\s])(\d{1,4})(?:$|[_\-\s])"),
+    re.compile(r"(\d{1,4})(?!.*\d)"),
 ]
 
 
@@ -47,6 +57,7 @@ class TaskCandidate:
     date_norm: str
     filename_norm: str
     sequence: int | None
+    series_key: str
 
 
 @dataclass(slots=True)
@@ -113,6 +124,14 @@ def _extract_filename_sequence(filename: str) -> int | None:
     return None
 
 
+def _build_series_key(filename: str) -> str:
+    path = Path(filename or "")
+    parent_norm = _normalize_text(str(path.parent))
+    stem = re.sub(r"(?:[_-]?page[_-]?\d+|[_-]?\d{1,4})$", "", path.stem, flags=re.IGNORECASE)
+    stem_norm = _normalize_text(stem or path.stem)
+    return f"{parent_norm}|{stem_norm}" if parent_norm or stem_norm else ""
+
+
 def _similarity(left: str, right: str) -> float:
     if not left or not right:
         return 0.0
@@ -136,6 +155,31 @@ def _merge_usage(total: dict[str, Any], usage: dict[str, Any]) -> None:
 
 def _merge_cache_key(batch_id: str) -> str:
     return f"{MERGE_CACHE_PREFIX}{batch_id}"
+
+
+def _extract_group_task_ids(payload: dict[str, Any]) -> set[int]:
+    ids: set[int] = set()
+    for group in payload.get("groups", []):
+        if not isinstance(group, dict):
+            continue
+        for task_id in group.get("task_ids", []):
+            try:
+                ids.add(int(task_id))
+            except (TypeError, ValueError):
+                continue
+    return ids
+
+
+def _extract_eligible_task_ids(tasks: list[OCRTask]) -> set[int]:
+    return {
+        int(task.id)
+        for task in tasks
+        if (task.status == "done") and _coerce_text(task.full_text)
+    }
+
+
+def _is_merge_cache_stale(payload: dict[str, Any], current_tasks: list[OCRTask]) -> bool:
+    return _extract_group_task_ids(payload) != _extract_eligible_task_ids(current_tasks)
 
 
 def _strip_evidence_in_result(payload: dict[str, Any]) -> None:
@@ -181,7 +225,51 @@ def _build_task_candidate(task: OCRTask) -> TaskCandidate:
         date_norm=date,
         filename_norm=filename_norm,
         sequence=_extract_filename_sequence(task.filename),
+        series_key=_build_series_key(task.filename),
     )
+
+
+def _should_use_llm_for_uncertain_pair(
+    left: TaskCandidate,
+    right: TaskCandidate,
+    *,
+    left_index: int,
+    right_index: int,
+) -> bool:
+    pair_distance = right_index - left_index
+    title_similarity = _similarity(left.title_norm, right.title_norm)
+    filename_similarity = _similarity(left.filename_norm, right.filename_norm)
+    same_date = bool(left.date_norm and right.date_norm and left.date_norm == right.date_norm)
+    same_responsible = bool(
+        left.responsible_norm and right.responsible_norm and left.responsible_norm == right.responsible_norm
+    )
+    same_doc_no_prefix = bool(
+        left.doc_no_prefix and right.doc_no_prefix and left.doc_no_prefix == right.doc_no_prefix
+    )
+    same_series = bool(left.series_key and left.series_key == right.series_key)
+    sequence_gap = (
+        abs(left.sequence - right.sequence)
+        if left.sequence is not None and right.sequence is not None
+        else None
+    )
+
+    if same_series:
+        if sequence_gap is not None:
+            return sequence_gap <= SERIES_NEIGHBOR_DISTANCE
+        return pair_distance <= SERIES_NEIGHBOR_DISTANCE
+
+    if pair_distance <= NEARBY_CANDIDATE_DISTANCE:
+        if title_similarity >= TITLE_HINT_THRESHOLD:
+            return True
+        if filename_similarity >= FILENAME_HINT_THRESHOLD and (same_date or same_responsible or same_doc_no_prefix):
+            return True
+        if same_date and (same_responsible or same_doc_no_prefix):
+            return True
+
+    if title_similarity >= 0.9 and (same_date or same_responsible or filename_similarity >= 0.7):
+        return True
+
+    return False
 
 
 def _rule_decision(left: TaskCandidate, right: TaskCandidate) -> tuple[bool | None, float, str]:
@@ -189,6 +277,15 @@ def _rule_decision(left: TaskCandidate, right: TaskCandidate) -> tuple[bool | No
         if left.doc_no_norm == right.doc_no_norm:
             return True, 1.0, "文号完全一致。"
         return False, 0.0, "文号不一致。"
+
+    if (
+        left.series_key
+        and left.series_key == right.series_key
+        and left.sequence is not None
+        and right.sequence is not None
+        and abs(left.sequence - right.sequence) <= SERIES_NEIGHBOR_DISTANCE
+    ):
+        return True, 0.96, "文件序列连续且属于同一命名系列。"
 
     title_similarity = _similarity(left.title_norm, right.title_norm)
     filename_similarity = _similarity(left.filename_norm, right.filename_norm)
@@ -270,6 +367,33 @@ def _build_merged_text(candidates: list[TaskCandidate]) -> tuple[str, int, list[
     return "\n\n".join(parts), page_count, merged_pages
 
 
+async def _run_limited(semaphore: asyncio.Semaphore, coroutine):
+    async with semaphore:
+        return await coroutine
+
+
+def _build_rule_fallback_comparison(
+    *,
+    filename: str,
+    page_count: int,
+    full_text: str,
+    result_json: Any,
+) -> dict[str, Any]:
+    rule_fields = extract_fields(filename, full_text or "", result_json, page_count)
+    llm_fields = {field: "" for field in ARCHIVE_FIELDS}
+    llm_fields["evidence"] = {field: "" for field in ARCHIVE_FIELDS}
+    return {
+        "rule_fields": rule_fields,
+        "llm_fields": llm_fields,
+        "recommended_fields": dict(rule_fields),
+        "conflicts": {},
+        "agreement": build_agreement_summary(rule_fields, llm_fields),
+        "provider": "rule-fallback",
+        "model": "",
+        "raw_usage": {},
+    }
+
+
 async def batch_merge_extract_fields(
     db: AsyncSession,
     *,
@@ -315,8 +439,10 @@ async def batch_merge_extract_fields(
     union_find = _UnionFind(len(candidates))
     positive_edges: list[PositiveEdge] = []
     raw_usage: dict[str, Any] = {}
-    provider = "minimax"
+    provider = "rule-fallback"
     model = ""
+    llm_semaphore = asyncio.Semaphore(MINIMAX_BATCH_CONCURRENCY)
+    pending_pair_jobs: list[tuple[int, int, str, TaskCandidate, TaskCandidate]] = []
 
     for left_index in range(len(candidates)):
         for right_index in range(left_index + 1, len(candidates)):
@@ -337,16 +463,47 @@ async def batch_merge_extract_fields(
             if merge is False:
                 continue
 
-            llm_decision = await call_minimax_same_document_judgement(
-                left_filename=left.task.filename,
-                left_page_count=left.task.page_count,
-                left_full_text=left.task.full_text or "",
-                left_rule_fields=left.rule_fields,
-                right_filename=right.task.filename,
-                right_page_count=right.task.page_count,
-                right_full_text=right.task.full_text or "",
-                right_rule_fields=right.rule_fields,
-            )
+            if not _should_use_llm_for_uncertain_pair(
+                left,
+                right,
+                left_index=left_index,
+                right_index=right_index,
+            ):
+                continue
+
+            pending_pair_jobs.append((left_index, right_index, reason, left, right))
+
+    if pending_pair_jobs:
+        pair_results = await asyncio.gather(
+            *[
+                _run_limited(
+                    llm_semaphore,
+                    call_minimax_same_document_judgement(
+                        left_filename=left.task.filename,
+                        left_page_count=left.task.page_count,
+                        left_full_text=left.task.full_text or "",
+                        left_rule_fields=left.rule_fields,
+                        right_filename=right.task.filename,
+                        right_page_count=right.task.page_count,
+                        right_full_text=right.task.full_text or "",
+                        right_rule_fields=right.rule_fields,
+                    ),
+                )
+                for _left_index, _right_index, _reason, left, right in pending_pair_jobs
+            ],
+            return_exceptions=True,
+        )
+
+        for (left_index, right_index, reason, left, right), llm_decision in zip(pending_pair_jobs, pair_results):
+            if isinstance(llm_decision, Exception):
+                logger.warning(
+                    "Skipping uncertain pair (%s, %s) for batch %s because same-document judgement failed: %s",
+                    left.task.id,
+                    right.task.id,
+                    batch_id,
+                    llm_decision,
+                )
+                continue
             _merge_usage(raw_usage, llm_decision.get("raw_usage", {}))
             provider = llm_decision.get("provider") or provider
             model = model or (llm_decision.get("model") or "")
@@ -403,6 +560,8 @@ async def batch_merge_extract_fields(
             }
         )
 
+    group_compare_jobs: list[tuple[dict[str, Any], int, str, str, Any]] = []
+    compare_coroutines = []
     for group in groups_payload:
         members = group_members[group["group_id"]]
         merged_text, merged_page_count, merged_pages = _build_merged_text(members)
@@ -413,27 +572,56 @@ async def batch_merge_extract_fields(
             if len(members) == 1
             else f"{Path(members[0].task.filename).stem}_merged_{len(members)}"
         )
-        comparison = await compare_rule_and_llm_fields_for_content(
-            filename=merged_filename,
-            page_count=merged_page_count,
-            full_text=merged_text,
-            result_json=merged_pages,
-            include_evidence=include_evidence,
+        group_compare_jobs.append((group, merged_page_count, merged_filename, merged_text, merged_pages))
+        compare_coroutines.append(
+            _run_limited(
+                llm_semaphore,
+                compare_rule_and_llm_fields_for_content(
+                    filename=merged_filename,
+                    page_count=merged_page_count,
+                    full_text=merged_text,
+                    result_json=merged_pages,
+                    include_evidence=include_evidence,
+                ),
+            )
         )
-        _merge_usage(raw_usage, comparison.get("raw_usage", {}))
-        provider = comparison.get("provider") or provider
-        model = model or (comparison.get("model") or "")
-        documents_payload.append(
-            {
-                "group_id": group["group_id"],
-                "merged_page_count": merged_page_count,
-                "rule_fields": comparison["rule_fields"],
-                "llm_fields": comparison["llm_fields"],
-                "recommended_fields": comparison["recommended_fields"],
-                "conflicts": comparison["conflicts"],
-                "agreement": comparison["agreement"],
-            }
-        )
+
+    if compare_coroutines:
+        compare_results = await asyncio.gather(*compare_coroutines, return_exceptions=True)
+        for (group, merged_page_count, merged_filename, merged_text, merged_pages), comparison in zip(
+            group_compare_jobs,
+            compare_results,
+        ):
+            if isinstance(comparison, Exception):
+                logger.warning(
+                    "Falling back to rule-only extraction for group %s in batch %s because field extraction failed: %s",
+                    group["group_id"],
+                    batch_id,
+                    comparison,
+                )
+                comparison = _build_rule_fallback_comparison(
+                    filename=merged_filename,
+                    page_count=merged_page_count,
+                    full_text=merged_text,
+                    result_json=merged_pages,
+                )
+
+            _merge_usage(raw_usage, comparison.get("raw_usage", {}))
+            comparison_provider = comparison.get("provider")
+            if comparison_provider not in {"", None}:
+                provider = comparison_provider
+            model = model or (comparison.get("model") or "")
+            documents_payload.append(
+                {
+                    "group_id": group["group_id"],
+                    "merged_page_count": merged_page_count,
+                    "rule_fields": comparison["rule_fields"],
+                    "llm_fields": comparison["llm_fields"],
+                    "recommended_fields": comparison["recommended_fields"],
+                    "conflicts": comparison["conflicts"],
+                    "agreement": comparison["agreement"],
+                }
+            )
 
     return {
         "batch_id": batch_id,
@@ -464,10 +652,28 @@ async def get_batch_merge_extract_result(
     if not force_refresh:
         cached = cache_get(cache_key)
         if isinstance(cached, dict):
-            payload = deepcopy(cached)
-            if not include_evidence:
-                _strip_evidence_in_result(payload)
-            return payload
+            try:
+                current_tasks = await _load_batch_tasks(db, batch_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Failed to validate batch merge cache for batch %s, fallback to cached payload.",
+                    batch_id,
+                    exc_info=True,
+                )
+                current_tasks = None
+            if current_tasks is None:
+                payload = deepcopy(cached)
+                if not include_evidence:
+                    _strip_evidence_in_result(payload)
+                return payload
+            if _is_merge_cache_stale(cached, current_tasks):
+                logger.info("Discarding stale batch merge cache for batch %s.", batch_id)
+                cache_delete(cache_key)
+            else:
+                payload = deepcopy(cached)
+                if not include_evidence:
+                    _strip_evidence_in_result(payload)
+                return payload
 
     computed = await batch_merge_extract_fields(
         db,

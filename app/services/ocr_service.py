@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.path_security import is_managed_upload_path
 from app.core.result_validation import normalize_result_pages, serialize_pages_text
-from app.core.ocr_engine import ocr_document
 from app.db.models import ArchiveRecord, OCRTask
 from app.services.archive_service import save_archive_record
 from app.services.excel_export import (
@@ -25,6 +24,14 @@ from config import ALLOWED_EXTENSIONS, UPLOAD_DIR
 
 
 logger = logging.getLogger(__name__)
+
+
+def _run_ocr_document(file_path: str, mode: str):
+    # Delay importing the OCR engine until a task is actually processed so
+    # the API can finish startup before heavy OCR dependencies are touched.
+    from app.core.ocr_engine import ocr_document
+
+    return ocr_document(file_path, mode)
 
 
 async def save_upload_file(filename: str, file_content: bytes, relative_path: str = "") -> tuple[str, str]:
@@ -69,6 +76,7 @@ async def create_task(
 
 
 _MODE_TIMEOUT: dict[str, int] = {
+    "baidu_vl": 600,
     "vl": 600,
     "layout": 300,
     "ocr": 120,
@@ -87,7 +95,7 @@ async def run_ocr_task(db: AsyncSession, task_id: int, mode: str = "layout") -> 
     timeout = _MODE_TIMEOUT.get(mode, 300)
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(ocr_document, task.file_path, mode),
+            asyncio.to_thread(_run_ocr_document, task.file_path, mode),
             timeout=timeout,
         )
         pages = normalize_result_pages(result["pages"])

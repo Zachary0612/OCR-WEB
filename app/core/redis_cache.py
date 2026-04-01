@@ -102,9 +102,11 @@ def invalidate_task(task_id: int) -> None:
     cache_delete_pattern("list:*")
     cache_delete_pattern("search:*")
     cache_delete("folders")
+    cache_delete("folders:terminal")
 
 
 def invalidate_lists() -> None:
     cache_delete_pattern("list:*")
     cache_delete_pattern("search:*")
     cache_delete("folders")
+    cache_delete("folders:terminal")

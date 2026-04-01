@@ -1,22 +1,23 @@
 <template>
-  <div class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+  <div class="gov-panel overflow-hidden">
     <div class="border-b px-5 py-4" :class="cc.headerBg">
       <div class="flex items-center justify-between">
         <div class="flex items-center space-x-2">
           <div class="flex h-8 w-8 items-center justify-center rounded-lg text-white" :class="cc.iconBg">
             <svg v-if="model.icon === 'brain'" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
             <svg v-else-if="model.icon === 'layout'" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+            <svg v-else-if="model.icon === 'cloud'" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
             <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
           </div>
           <div>
-            <h3 class="text-sm font-semibold text-gray-800">{{ model.name }}</h3>
-            <p class="text-xs text-gray-500">{{ model.desc }}</p>
+            <h3 class="text-sm font-semibold text-[var(--gov-text)]">{{ model.name }}</h3>
+            <p class="text-xs gov-muted">{{ model.desc }}</p>
           </div>
         </div>
         <span
           v-if="model.badge"
           class="rounded-full px-2 py-0.5 text-xs font-medium"
-          :class="model.color === 'indigo' ? 'bg-indigo-100 text-indigo-700' : model.color === 'green' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'"
+          :class="model.color === 'cyan' ? 'bg-cyan-100 text-cyan-700' : model.color === 'indigo' ? 'bg-indigo-100 text-indigo-700' : model.color === 'green' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'"
         >
           {{ model.badge }}
         </span>
@@ -26,237 +27,314 @@
     <div class="p-4">
       <div
         class="cursor-pointer rounded-lg border-2 border-dashed p-6 text-center transition-all"
-        :class="dragover ? 'border-blue-400 bg-blue-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'"
+        :class="dragover ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)]' : 'border-[var(--gov-border)] hover:border-[var(--gov-border-strong)] hover:bg-slate-50'"
         @click="fileInput?.click()"
         @dragover.prevent="dragover = true"
         @dragleave="dragover = false"
         @drop.prevent="handleDrop"
       >
-        <svg class="mx-auto mb-2 h-8 w-8 text-gray-400" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4l4 4M2 17l.621 2.485A2 2 0 004.561 21h14.878a2 2 0 001.94-1.515L22 17"/></svg>
-        <p class="text-sm text-gray-600">拖拽文件到这里，或 <span class="font-medium text-blue-600">点击选择</span></p>
-        <p class="mt-1 text-xs text-gray-400">支持 JPG / PNG / PDF，多文件或整个目录都可以。</p>
+        <svg class="mx-auto mb-2 h-8 w-8 text-[var(--gov-text-muted)]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4l4 4M2 17l.621 2.485A2 2 0 004.561 21h14.878a2 2 0 001.94-1.515L22 17"/></svg>
+        <p class="text-sm text-[var(--gov-text-muted)]">拖拽材料到这里，或 <span class="font-medium text-[var(--gov-primary)]">点击选择</span></p>
+        <p class="mt-1 text-xs gov-muted">支持 JPG / PNG / PDF，可批量导入文件或本地目录。</p>
       </div>
 
-      <div class="mt-3 space-y-2">
-        <div class="flex space-x-2">
-          <input
-            v-model="folderPath"
-            type="text"
-            placeholder="输入服务器允许目录中的绝对路径"
-            class="w-full rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs focus:border-gray-400 focus:outline-none focus:ring-1"
-            @keydown.enter="importFromPath"
-          />
-          <button class="rounded-lg bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-200" @click="folderInput?.click()">
-            选目录
-          </button>
-          <button
-            class="rounded-lg px-3 py-2 text-xs font-medium text-white transition"
-            :class="scanning ? 'bg-gray-400' : 'bg-gray-600 hover:bg-gray-700'"
-            :disabled="!folderPath.trim() || scanning"
-            @click="importFromPath"
-          >
-            {{ scanning ? '导入中...' : '导入' }}
-          </button>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50" @click="fileInput?.click()">
+          选择文件
+        </button>
+        <button class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50" @click="folderInput?.click()">
+          选择目录
+        </button>
+        <button class="rounded-lg border border-dashed border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2 text-xs font-medium text-[var(--gov-text-muted)] transition hover:border-[var(--gov-border-strong)] hover:text-[var(--gov-text)]" @click="toggleViewMode">
+          {{ isAdvancedView ? '收起高级设置' : '高级设置' }}
+        </button>
+      </div>
+
+      <div v-if="isAdvancedView" class="mt-3 rounded-xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] p-3">
+        <div class="mb-2 flex items-center justify-between">
+          <div>
+            <p class="text-xs font-semibold text-[var(--gov-text)]">高级设置</p>
+            <p class="mt-1 text-[11px] gov-muted">用于目录导入和导出位置设置，不影响当前主流程使用。</p>
+          </div>
+          <button class="text-xs gov-muted hover:text-[var(--gov-text)]" @click="toggleViewMode">收起</button>
         </div>
 
-        <input
-          v-model="excelPath"
-          type="text"
-          placeholder="归档 Excel 输出路径（可选）"
-          class="w-full rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs focus:border-gray-400 focus:outline-none focus:ring-1"
-        />
-        <input
-          v-model="outputDir"
-          type="text"
-          placeholder="OCR 结果输出目录（可选）"
-          class="w-full rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs focus:border-gray-400 focus:outline-none focus:ring-1"
-        />
+        <div class="space-y-2">
+          <div class="flex space-x-2">
+            <input
+              v-model="folderPath"
+              type="text"
+              placeholder="输入已授权的目录路径"
+              class="w-full rounded-lg border border-dashed border-[var(--gov-border)] px-3 py-2 text-xs focus:border-[var(--gov-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--gov-primary)]/30"
+              @keydown.enter="importFromPath"
+            />
+            <button
+              class="rounded-lg px-3 py-2 text-xs font-medium text-white transition"
+              :class="scanning ? 'bg-slate-400' : 'bg-[var(--gov-primary)] hover:brightness-105'"
+              :disabled="!folderPath.trim() || scanning"
+              @click="importFromPath"
+            >
+              {{ scanning ? '导入中…' : '目录导入' }}
+            </button>
+          </div>
 
-        <p v-if="scanMsg" class="text-xs" :class="scanError ? 'text-red-500' : 'text-green-600'">{{ scanMsg }}</p>
+          <input
+            v-model="excelPath"
+            type="text"
+            placeholder="归档目录导出位置（可选）"
+            class="w-full rounded-lg border border-dashed border-[var(--gov-border)] px-3 py-2 text-xs focus:border-[var(--gov-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--gov-primary)]/30"
+          />
+          <input
+            v-model="outputDir"
+            type="text"
+            placeholder="处理结果保存位置（可选）"
+            class="w-full rounded-lg border border-dashed border-[var(--gov-border)] px-3 py-2 text-xs focus:border-[var(--gov-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--gov-primary)]/30"
+          />
+        </div>
       </div>
 
       <input ref="fileInput" type="file" multiple accept=".jpg,.jpeg,.png,.bmp,.tiff,.tif,.pdf" class="hidden" @change="onFileSelect" />
       <input ref="folderInput" type="file" webkitdirectory multiple class="hidden" @change="onFolderSelect" />
     </div>
 
-    <div v-if="queue.length || pathQueue.length" class="px-4 pb-2">
-      <div class="mb-2 flex items-center justify-between">
-        <span class="text-xs font-medium text-gray-500">待处理队列（{{ queue.length + pathQueue.length }}）</span>
-        <button class="text-xs text-red-500 hover:text-red-700" @click="clearQueue">清空</button>
-      </div>
-
-      <div class="max-h-44 space-y-1.5 overflow-y-auto">
-        <div v-for="(file, index) in queue" :key="`file-${index}`" class="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 text-xs">
-          <div class="min-w-0 flex-1 truncate text-gray-700">
-            {{ file.webkitRelativePath || file._relativePath || file.name }}
-            <span class="ml-2 text-gray-400">{{ formatSize(file.size) }}</span>
+    <div v-if="hasImportActivity" class="px-4 pb-3">
+      <div class="rounded-2xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p class="text-xs font-semibold tracking-[0.14em] text-[var(--gov-primary)]">{{ stageMeta.eyebrow }}</p>
+            <p class="mt-1 text-sm font-semibold text-[var(--gov-text)]">{{ stageMeta.title }}</p>
+            <p class="mt-1 text-xs leading-6 gov-muted">{{ importMessage || stageMeta.description }}</p>
           </div>
-          <button class="text-gray-400 hover:text-red-500" @click="removeFile(index)">移除</button>
+          <div class="rounded-full border border-[var(--gov-border)] bg-white px-3 py-1 text-xs font-medium text-[var(--gov-text-muted)]">
+            {{ Math.round(importProgressPercent) }}%
+          </div>
         </div>
 
-        <div v-for="(file, index) in pathQueue" :key="`path-${index}`" class="flex items-center justify-between rounded-lg bg-blue-50 px-3 py-2 text-xs">
-          <div class="min-w-0 flex-1 truncate text-gray-700">
-            {{ file.rel_path }}
-            <span class="ml-2 text-gray-400">{{ formatSize(file.size) }}</span>
+        <div class="mt-3 h-2 w-full rounded-full bg-white/90">
+          <div class="h-2 rounded-full transition-all duration-300" :class="cc.progressBar" :style="{ width: `${importProgressPercent}%` }"></div>
+        </div>
+
+        <div v-if="displayQueueSummary.totalFiles" class="mt-3 grid grid-cols-3 gap-2 text-xs">
+          <div class="rounded-xl border border-[var(--gov-border)] bg-white px-3 py-2">
+            <p class="gov-muted">材料数量</p>
+            <p class="mt-1 font-semibold text-[var(--gov-text)]">{{ displayQueueSummary.totalFiles }} 份</p>
           </div>
-          <button class="text-gray-400 hover:text-red-500" @click="pathQueue.splice(index, 1)">移除</button>
+          <div class="rounded-xl border border-[var(--gov-border)] bg-white px-3 py-2">
+            <p class="gov-muted">涉及目录</p>
+            <p class="mt-1 font-semibold text-[var(--gov-text)]">{{ displayQueueSummary.folderCount || 0 }} 个</p>
+          </div>
+          <div class="rounded-xl border border-[var(--gov-border)] bg-white px-3 py-2">
+            <p class="gov-muted">总大小</p>
+            <p class="mt-1 font-semibold text-[var(--gov-text)]">{{ displayQueueSummary.totalSizeLabel }}</p>
+          </div>
+        </div>
+
+        <div v-if="totalCount" class="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+          <div class="rounded-xl border border-[var(--gov-border)] bg-white px-3 py-2">
+            <p class="gov-muted">批次总量</p>
+            <p class="mt-1 font-semibold text-[var(--gov-text)]">{{ totalCount }} 份</p>
+          </div>
+          <div class="rounded-xl border border-emerald-100 bg-emerald-50/70 px-3 py-2">
+            <p class="text-emerald-700/80">已完成</p>
+            <p class="mt-1 font-semibold text-emerald-700">{{ completedCount }} 份</p>
+          </div>
+          <div class="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2">
+            <p class="text-blue-700/80">处理中</p>
+            <p class="mt-1 font-semibold text-blue-700">{{ activeProcessingCount }} 份</p>
+          </div>
+          <div class="rounded-xl border border-amber-100 bg-amber-50/70 px-3 py-2">
+            <p class="text-amber-700/80">异常数</p>
+            <p class="mt-1 font-semibold text-amber-700">{{ failedCount }} 份</p>
+          </div>
+        </div>
+
+        <p v-if="scanMsg" class="mt-3 text-xs" :class="scanError ? 'text-[var(--gov-danger)]' : 'text-[var(--gov-success)]'">{{ scanMsg }}</p>
+      </div>
+    </div>
+
+    <div v-if="hasQueueItems && !processing" class="px-4 pb-2">
+      <div class="mb-2 flex items-center justify-between">
+        <div>
+          <span class="text-xs font-medium gov-muted">待处理明细（{{ queue.length + pathQueue.length }}）</span>
+          <p class="mt-1 text-[11px] gov-muted">默认仅展示部分预览，避免大批次材料直接铺满页面。</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button v-if="showQueueToggle" class="text-xs text-[var(--gov-primary)] hover:brightness-95" @click="toggleQueueExpanded">
+            {{ queueExpanded ? '收起明细' : `展开全部（${queue.length + pathQueue.length}）` }}
+          </button>
+          <button class="text-xs text-[var(--gov-danger)] hover:brightness-95" @click="clearQueue">清空</button>
+        </div>
+      </div>
+
+      <div class="max-h-52 space-y-1.5 overflow-y-auto">
+        <div v-for="(file, index) in previewQueueFiles" :key="`file-${index}`" class="flex items-center justify-between rounded-lg border border-[var(--gov-border)] bg-slate-50 px-3 py-2 text-xs">
+          <div class="min-w-0 flex-1 truncate text-[var(--gov-text)]">
+            {{ file.webkitRelativePath || file._relativePath || file.name }}
+            <span class="ml-2 gov-muted">{{ formatSize(file.size) }}</span>
+          </div>
+          <button class="gov-muted hover:text-[var(--gov-danger)]" @click="removeFile(index)">移除</button>
+        </div>
+
+        <div v-for="(file, index) in previewPathFiles" :key="`path-${index}`" class="flex items-center justify-between rounded-lg border border-[var(--gov-border)] bg-[var(--gov-primary-soft)] px-3 py-2 text-xs">
+          <div class="min-w-0 flex-1 truncate text-[var(--gov-text)]">
+            {{ file.rel_path }}
+            <span class="ml-2 gov-muted">{{ formatSize(file.size) }}</span>
+          </div>
+          <button class="gov-muted hover:text-[var(--gov-danger)]" @click="removePathFile(previewPathBaseIndex + index)">移除</button>
+        </div>
+
+        <div v-if="hiddenQueueCount > 0" class="rounded-lg border border-dashed border-[var(--gov-border)] bg-white px-3 py-2 text-xs gov-muted">
+          还有 {{ hiddenQueueCount }} 份材料未展开，点击“展开全部”可查看完整清单。
         </div>
       </div>
     </div>
 
-    <div v-if="queue.length || pathQueue.length" class="space-y-3 px-4 pb-4">
+    <div v-if="hasQueueItems || processing || batchDone" class="space-y-3 px-4 pb-4">
       <div class="flex items-center space-x-2">
-        <label class="text-xs text-gray-500">定时开始</label>
+        <label class="text-xs gov-muted">定时开始</label>
         <input
           v-model="scheduledTime"
           type="datetime-local"
-          class="flex-1 rounded-md border border-gray-200 px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+          class="flex-1 rounded-md border border-[var(--gov-border)] px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-[var(--gov-primary)]/30"
         />
-        <button v-if="scheduledTime" class="text-xs text-gray-400 hover:text-gray-600" @click="scheduledTime = ''">清除</button>
+        <button v-if="scheduledTime" class="text-xs gov-muted hover:text-[var(--gov-text)]" @click="scheduledTime = ''">清除</button>
       </div>
 
       <button
         class="w-full rounded-lg py-2 text-sm font-medium text-white transition-all"
-        :class="processing ? 'cursor-not-allowed bg-gray-400' : cc.btn"
-        :disabled="processing"
+        :class="processing ? 'cursor-not-allowed bg-slate-400' : cc.btn"
+        :disabled="processing || !hasQueueItems"
         @click="startBatch"
       >
-        {{ processing ? `处理中 (${doneCount}/${totalCount})` : scheduledTime ? '定时批量提交任务' : '立即批量提交任务' }}
+        {{ actionButtonLabel }}
       </button>
 
-      <div v-if="processing" class="h-1.5 w-full rounded-full bg-gray-200">
-        <div class="h-1.5 rounded-full transition-all duration-300" :class="cc.progressBar" :style="{ width: `${totalCount ? (doneCount / totalCount) * 100 : 0}%` }"></div>
-      </div>
-
-      <div v-if="batchDone && lastBatchId && !processing" class="flex items-center space-x-2">
-        <button class="flex-1 rounded-lg bg-blue-600 py-1.5 text-xs font-medium text-white transition hover:bg-blue-700" @click="doExportInitExcel">
-          导出目录 Excel
+      <div v-if="batchDone && lastBatchId && !processing" class="grid grid-cols-2 gap-2">
+        <button class="rounded-lg bg-[var(--gov-primary)] py-1.5 text-xs font-medium text-white transition hover:brightness-105" @click="doExportInitExcel">
+          导出目录清单
         </button>
-        <button class="flex-1 rounded-lg bg-emerald-600 py-1.5 text-xs font-medium text-white transition hover:bg-emerald-700" @click="doExportExcel">
-          导出本批次 Excel
+        <button class="rounded-lg bg-emerald-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105" @click="doExportExcel">
+          导出本次归档
         </button>
         <button
-          class="flex-1 rounded-lg bg-violet-600 py-1.5 text-xs font-medium text-white transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-violet-300"
+          class="rounded-lg bg-violet-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-violet-300"
           :disabled="aiMerging"
           @click="runAiMergeExtract"
         >
-          {{ aiMerging ? 'AI 整合中...' : 'AI 整合抽取' }}
+          {{ aiMerging ? '智能整合中…' : '智能整合' }}
         </button>
         <button
-          class="flex-1 rounded-lg bg-slate-700 py-1.5 text-xs font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+          class="rounded-lg bg-slate-700 py-1.5 text-xs font-medium text-white transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-300"
           :disabled="!lastBatchId"
           @click="openBatchInsights"
         >
-          打开评测页
+          质量概览
         </button>
       </div>
-      <p v-if="aiMergeError" class="text-xs text-red-500">{{ aiMergeError }}</p>
-      <p v-if="aiMergeResult && !aiMerging" class="text-xs text-emerald-600">
-        AI 整合完成：共 {{ aiMergeResult.summary.groups_count }} 组，已生成 {{ aiMergeResult.summary.documents_count }} 份合并抽取结果。
+
+      <p v-if="aiMergeError" class="text-xs text-[var(--gov-danger)]">{{ aiMergeError }}</p>
+      <p v-if="aiMergeResult && !aiMerging" class="text-xs text-[var(--gov-success)]">
+        智能整合已完成，已形成 {{ aiMergeResult.summary.groups_count }} 组材料整合建议。
       </p>
     </div>
 
     <div v-if="aiMergeResult" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @click.self="clearAiMergeResult">
       <div class="max-h-[85vh] w-full max-w-5xl overflow-hidden rounded-xl bg-white shadow-2xl">
-        <div class="flex items-center justify-between border-b border-gray-200 px-5 py-3">
+        <div class="flex items-center justify-between border-b border-[var(--gov-border)] px-5 py-3">
           <div>
-            <h3 class="text-sm font-semibold text-gray-800">AI 整合抽取结果</h3>
-            <p class="text-xs text-gray-500">批次：{{ aiMergeResult.batch_id }}</p>
+            <h3 class="text-sm font-semibold text-[var(--gov-text)]">智能整合结果</h3>
+            <p class="text-xs gov-muted">已生成可核对的分组和字段建议。</p>
           </div>
-          <button class="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100" @click="clearAiMergeResult">关闭</button>
+          <button class="rounded px-2 py-1 text-xs gov-muted hover:bg-slate-100" @click="clearAiMergeResult">关闭</button>
         </div>
 
         <div class="max-h-[calc(85vh-64px)] space-y-4 overflow-y-auto px-5 py-4">
-          <div class="grid grid-cols-2 gap-2 text-xs text-gray-600 md:grid-cols-4">
-            <div class="rounded-lg bg-gray-50 px-3 py-2">总任务：{{ aiMergeResult.summary.total_tasks }}</div>
-            <div class="rounded-lg bg-gray-50 px-3 py-2">可用任务：{{ aiMergeResult.summary.eligible_tasks }}</div>
-            <div class="rounded-lg bg-gray-50 px-3 py-2">分组数：{{ aiMergeResult.summary.groups_count }}</div>
-            <div class="rounded-lg bg-gray-50 px-3 py-2">文档数：{{ aiMergeResult.summary.documents_count }}</div>
+          <div class="grid grid-cols-2 gap-2 text-xs text-[var(--gov-text-muted)] md:grid-cols-4">
+            <div class="rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2">纳入材料：{{ aiMergeResult.summary.total_tasks }}</div>
+            <div class="rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2">可整合材料：{{ aiMergeResult.summary.eligible_tasks }}</div>
+            <div class="rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2">整合分组：{{ aiMergeResult.summary.groups_count }}</div>
+            <div class="rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2">整合结果：{{ aiMergeResult.summary.documents_count }}</div>
           </div>
 
-          <div class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <div class="rounded-xl border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-3">
             <div class="mb-2 flex items-center justify-between">
-              <p class="text-xs font-semibold text-slate-700">统计概览</p>
+              <p class="text-xs font-semibold text-[var(--gov-text)]">统计概览</p>
               <div class="flex items-center space-x-2">
                 <button
-                  class="rounded bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-100"
+                  class="rounded border border-[var(--gov-border)] bg-white px-2 py-1 text-[11px] text-[var(--gov-text)] hover:bg-slate-50"
                   :disabled="aiMerging"
                   @click="recomputeAiMerge"
                 >
-                  {{ aiMerging ? '重算中...' : '手动重算' }}
+                  {{ aiMerging ? '分析中…' : '重新分析' }}
                 </button>
                 <button
-                  class="rounded bg-indigo-600 px-2 py-1 text-[11px] text-white hover:bg-indigo-700"
+                  class="rounded bg-[var(--gov-primary)] px-2 py-1 text-[11px] text-white hover:brightness-105"
                   @click="openBatchInsights"
                 >
-                  打开统计页
+                  查看质量概览
                 </button>
               </div>
             </div>
-            <p v-if="aiMetricsLoading" class="text-xs text-slate-500">统计计算中...</p>
-            <p v-else-if="aiMetricsError" class="text-xs text-red-500">{{ aiMetricsError }}</p>
-            <div v-else-if="operationalMetrics" class="grid grid-cols-2 gap-2 text-xs text-slate-700 md:grid-cols-4">
-              <div class="rounded bg-white px-2 py-1">推荐填充率：{{ pct(operationalMetrics.field_fill_rate?.recommended) }}</div>
-              <div class="rounded bg-white px-2 py-1">冲突率：{{ pct(operationalMetrics.conflict_rate) }}</div>
-              <div class="rounded bg-white px-2 py-1">平均同文档置信度：{{ pct(operationalMetrics.avg_same_document_confidence) }}</div>
-              <div class="rounded bg-white px-2 py-1">规则/LLM一致率：{{ pct(operationalMetrics.avg_rule_llm_agreement) }}</div>
+            <p v-if="aiMetricsLoading" class="text-xs gov-muted">质量分析中…</p>
+            <p v-else-if="aiMetricsError" class="text-xs text-[var(--gov-danger)]">{{ aiMetricsError }}</p>
+            <div v-else-if="operationalMetrics" class="grid grid-cols-2 gap-2 text-xs text-[var(--gov-text)] md:grid-cols-4">
+              <div class="rounded bg-white px-2 py-1">字段完整率：{{ pct(operationalMetrics.field_fill_rate?.recommended) }}</div>
+              <div class="rounded bg-white px-2 py-1">待核对率：{{ pct(operationalMetrics.conflict_rate) }}</div>
+              <div class="rounded bg-white px-2 py-1">整合可信度：{{ pct(operationalMetrics.avg_same_document_confidence) }}</div>
+              <div class="rounded bg-white px-2 py-1">双路一致度：{{ pct(operationalMetrics.avg_rule_llm_agreement) }}</div>
             </div>
-            <p v-if="truthMetrics?.coverage" class="mt-2 text-xs text-slate-600">
-              真值覆盖：{{ truthMetrics.coverage.mapped_task_count }}/{{ truthMetrics.coverage.predicted_task_count }} 个任务，
-              分组F1={{ pct(truthMetrics.grouping?.pairwise_f1) }}
-            </p>
           </div>
 
           <div
-            v-for="group in aiMergeResult.groups"
+            v-for="(group, groupIndex) in aiMergeResult.groups"
             :key="group.group_id"
-            class="rounded-xl border border-gray-200 bg-white p-4"
+            class="rounded-xl border border-[var(--gov-border)] bg-white p-4"
           >
             <div class="mb-2 flex items-center justify-between">
-              <div class="text-sm font-semibold text-gray-800">{{ group.group_id }}</div>
-              <div class="text-xs text-gray-500">同文档置信度：{{ Number(group.same_document_confidence).toFixed(2) }}</div>
+              <div class="text-sm font-semibold text-[var(--gov-text)]">第 {{ groupIndex + 1 }} 组整合材料</div>
+              <div class="text-xs gov-muted">整合可信度：{{ Number(group.same_document_confidence).toFixed(2) }}</div>
             </div>
 
-            <div class="mb-3 rounded-lg bg-gray-50 px-3 py-2">
-              <p class="mb-1 text-xs font-medium text-gray-600">归组文件</p>
-              <div class="space-y-1 text-xs text-gray-600">
+            <div class="mb-3 rounded-lg border border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2">
+              <p class="mb-1 text-xs font-medium text-[var(--gov-text)]">纳入材料</p>
+              <div class="space-y-1 text-xs text-[var(--gov-text-muted)]">
                 <div v-for="(name, idx) in group.filenames" :key="`${group.group_id}-${idx}`" class="flex items-center justify-between">
                   <span class="truncate pr-2">{{ name }}</span>
                   <button
-                    class="rounded bg-white px-2 py-0.5 text-[11px] text-blue-600 hover:bg-blue-50"
+                    class="rounded border border-[var(--gov-border)] bg-white px-2 py-0.5 text-[11px] text-[var(--gov-primary)] hover:bg-[var(--gov-primary-soft)]"
                     @click="openTask(group.task_ids[idx])"
                   >
-                    查看结果
+                    查看材料
                   </button>
                 </div>
               </div>
             </div>
 
-            <div class="mb-3 rounded-lg bg-blue-50 px-3 py-2">
-              <p class="mb-1 text-xs font-medium text-blue-700">判定依据</p>
-              <p class="text-xs leading-5 text-blue-800">{{ group.decision_reasons.join('；') || '无' }}</p>
+            <div class="mb-3 rounded-lg border border-[var(--gov-border)] bg-[var(--gov-primary-soft)] px-3 py-2">
+              <p class="mb-1 text-xs font-medium text-[var(--gov-primary)]">判定依据</p>
+              <p class="text-xs leading-5 text-[var(--gov-text)]">{{ group.decision_reasons.join('；') || '-' }}</p>
             </div>
 
-            <div v-if="documentMap[group.group_id]" class="rounded-lg border border-emerald-100 bg-emerald-50/40 px-3 py-3">
+            <div v-if="documentMap[group.group_id]" class="rounded-lg border border-emerald-100 bg-emerald-50/50 px-3 py-3">
               <div class="mb-2 flex items-center justify-between text-xs text-emerald-800">
                 <span>合并页数：{{ documentMap[group.group_id].merged_page_count }}</span>
-                <span>一致率：{{ Number(documentMap[group.group_id].agreement.ratio || 0).toFixed(2) }}</span>
+                <span>协同一致度：{{ Number(documentMap[group.group_id].agreement.ratio || 0).toFixed(2) }}</span>
               </div>
-              <div class="grid gap-1 text-xs text-gray-700 md:grid-cols-2">
+              <div class="grid gap-1 text-xs text-[var(--gov-text)] md:grid-cols-2">
                 <div
                   v-for="[field, value] in fieldEntries(documentMap[group.group_id].recommended_fields)"
                   :key="`${group.group_id}-${field}`"
                   class="rounded bg-white px-2 py-1"
                 >
-                  <span class="text-gray-500">{{ field }}：</span>
+                  <span class="gov-muted">{{ field }}：</span>
                   <span>{{ value || '-' }}</span>
                 </div>
               </div>
               <p
                 v-if="Object.keys(documentMap[group.group_id].conflicts || {}).length"
-                class="mt-2 text-xs text-amber-600"
+                class="mt-2 text-xs text-amber-700"
               >
-                存在冲突字段：{{ Object.keys(documentMap[group.group_id].conflicts || {}).join('、') }}
+                待核对字段：{{ Object.keys(documentMap[group.group_id].conflicts || {}).join('、') }}
               </p>
             </div>
           </div>
@@ -265,7 +343,7 @@
             v-if="aiMergeResult.summary.skipped_tasks?.length"
             class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700"
           >
-            <p class="mb-1 font-medium">已跳过任务</p>
+            <p class="mb-1 font-medium">已跳过材料</p>
             <div v-for="task in aiMergeResult.summary.skipped_tasks" :key="`skip-${task.task_id}`">
               #{{ task.task_id }} {{ task.filename }}（{{ task.reason }}）
             </div>
@@ -283,27 +361,33 @@ import { useRouter } from 'vue-router'
 import { useBatchUpload } from '../composables/useBatchUpload.js'
 
 const props = defineProps({ model: Object })
-const emit = defineEmits(['start-batch', 'view-result'])
+const emit = defineEmits(['start-batch', 'batch-completed', 'view-result'])
 const router = useRouter()
 
 const COLOR_MAP = {
+  cyan: {
+    headerBg: 'bg-cyan-50 border-cyan-100',
+    iconBg: 'bg-cyan-600',
+    btn: 'bg-cyan-700 hover:brightness-105',
+    progressBar: 'bg-cyan-600',
+  },
   indigo: {
     headerBg: 'bg-indigo-50 border-indigo-100',
-    iconBg: 'bg-indigo-500',
-    btn: 'bg-indigo-600 hover:bg-indigo-700',
-    progressBar: 'bg-indigo-500',
+    iconBg: 'bg-indigo-600',
+    btn: 'bg-indigo-700 hover:brightness-105',
+    progressBar: 'bg-indigo-600',
   },
   blue: {
     headerBg: 'bg-blue-50 border-blue-100',
-    iconBg: 'bg-blue-500',
-    btn: 'bg-blue-600 hover:bg-blue-700',
-    progressBar: 'bg-blue-500',
+    iconBg: 'bg-[var(--gov-primary)]',
+    btn: 'bg-[var(--gov-primary)] hover:brightness-105',
+    progressBar: 'bg-[var(--gov-primary)]',
   },
   green: {
-    headerBg: 'bg-green-50 border-green-100',
-    iconBg: 'bg-green-500',
-    btn: 'bg-green-600 hover:bg-green-700',
-    progressBar: 'bg-green-500',
+    headerBg: 'bg-emerald-50 border-emerald-100',
+    iconBg: 'bg-emerald-700',
+    btn: 'bg-emerald-700 hover:brightness-105',
+    progressBar: 'bg-emerald-700',
   },
 }
 
@@ -322,32 +406,44 @@ const {
   aiMetricsLoading,
   clearQueue,
   clearAiMergeResult,
+  displayQueueSummary,
   doExportExcel,
   doExportInitExcel,
-  doneCount,
+  completedCount,
   excelPath,
+  failedCount,
   folderPath,
   formatSize,
   importFromPath,
+  importMessage,
+  importProgressPercent,
+  importStage,
+  isAdvancedView,
   lastBatchId,
   onDrop,
   onFileSelect,
   onFolderSelect,
   outputDir,
   pathQueue,
+  pendingCount,
   processing,
+  processingCount,
   queue,
+  queueExpanded,
   removeFile,
-  scanError,
-  scanning,
-  scanMsg,
-  scheduledTime,
+  removePathFile,
   runAiMergeExtract,
+  scanError,
+  scanMsg,
+  scanning,
+  scheduledTime,
   startBatch,
   totalCount,
+  toggleQueueExpanded,
+  toggleViewMode,
 } = useBatchUpload(props.model.mode, {
   onSubmitted: () => emit('start-batch'),
-  onViewResult: (taskId) => emit('view-result', taskId),
+  onCompleted: (payload) => emit('batch-completed', payload),
 })
 
 const documentMap = computed(() => {
@@ -357,8 +453,69 @@ const documentMap = computed(() => {
   }
   return map
 })
+
 const operationalMetrics = computed(() => aiMetrics.value?.operational_metrics || null)
-const truthMetrics = computed(() => aiMetrics.value?.truth_metrics || null)
+const hasQueueItems = computed(() => Boolean(queue.value.length || pathQueue.value.length))
+const hasImportActivity = computed(() => hasQueueItems.value || processing.value || batchDone.value || importStage.value !== 'idle')
+const previewQueueFiles = computed(() => (queueExpanded.value ? queue.value : queue.value.slice(0, 2)))
+const previewPathBaseIndex = computed(() => (queueExpanded.value ? 0 : 0))
+const previewPathFiles = computed(() => (queueExpanded.value ? pathQueue.value : pathQueue.value.slice(0, 3)))
+const hiddenQueueCount = computed(() => {
+  const shownCount = previewQueueFiles.value.length + previewPathFiles.value.length
+  return Math.max(0, queue.value.length + pathQueue.value.length - shownCount)
+})
+const showQueueToggle = computed(() => queue.value.length + pathQueue.value.length > 5)
+const activeProcessingCount = computed(() => processingCount.value + pendingCount.value)
+
+const stageMeta = computed(() => {
+  switch (importStage.value) {
+    case 'scanning':
+      return {
+        eyebrow: '目录整理',
+        title: '正在整理导入材料',
+        description: '系统正在核对目录中的可识别材料，完成后再展示摘要和明细。',
+      }
+    case 'ready':
+      return {
+        eyebrow: '待开始处理',
+        title: '材料已整理完成',
+        description: '可以先查看摘要，再按需展开明细并发起批量处理。',
+      }
+    case 'uploading':
+      return {
+        eyebrow: '材料提交',
+        title: '正在提交材料',
+        description: '材料正在进入后台队列，请保持页面开启。',
+      }
+    case 'processing':
+      return {
+        eyebrow: '后台识别',
+        title: '正在识别处理中',
+        description: '系统正在后台完成识别和归档整理，可先查看阶段进度。',
+      }
+    case 'completed':
+      return {
+        eyebrow: '处理完成',
+        title: '本次处理已完成',
+        description: '可以导出目录清单、查看批次概览或继续发起智能整合。',
+      }
+    default:
+      return {
+        eyebrow: '批量处理',
+        title: '等待导入材料',
+        description: '支持本地文件、目录和授权路径导入，系统会先整理摘要再展示明细。',
+      }
+  }
+})
+
+const actionButtonLabel = computed(() => {
+  if (processing.value) {
+    if (importStage.value === 'uploading') return '材料提交中…'
+    if (importStage.value === 'processing') return '后台识别中…'
+    return '处理中…'
+  }
+  return scheduledTime.value ? '定时开始处理' : '开始处理'
+})
 
 function fieldEntries(fields) {
   return Object.entries(fields || {})

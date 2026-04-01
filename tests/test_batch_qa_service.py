@@ -35,7 +35,24 @@ class BatchQAServiceUnitTests(unittest.TestCase):
         tokens = batch_qa_service._tokenize_query("2024 ProjectA 文号 A-12")
         self.assertIn("2024", tokens)
         self.assertIn("projecta", tokens)
-        self.assertIn("文", tokens)
+        self.assertIn("文号", tokens)
+
+    def test_normalize_text_preserves_cjk_and_ascii(self):
+        normalized = batch_qa_service._normalize_text("预算汇总表的工程直接工程费合计是多少？ Project-A/2024")
+        self.assertIn("预算汇总表的工程直接工程费合计是多少", normalized)
+        self.assertIn("projecta2024", normalized)
+
+    def test_tokenize_query_pure_cjk_not_empty(self):
+        tokens = batch_qa_service._tokenize_query("预算汇总表的工程直接工程费合计是多少？")
+        self.assertGreater(len(tokens), 0)
+
+    def test_tokenize_query_keeps_key_phrases_and_strips_fillers(self):
+        tokens = batch_qa_service._tokenize_query("这批材料主要涉及什么会议或通知？会议时间是什么时候？")
+        self.assertIn("会议时间", tokens)
+        self.assertIn("会议", tokens)
+        self.assertIn("通知", tokens)
+        self.assertNotIn("这批", tokens)
+        self.assertNotIn("什么", tokens)
 
     def test_ranked_evidence_prefers_phrase_match(self):
         candidates = [

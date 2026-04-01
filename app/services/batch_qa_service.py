@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -26,8 +27,41 @@ DEFAULT_TOP_K = 8
 LOW_EVIDENCE_REJECT_THRESHOLD = 0.12
 QA_RATINGS = {"helpful", "not_helpful"}
 
-_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]")
-_NORMALIZE_PATTERN = re.compile(r"[\s,.;:!?\-_/\\，。；：！？（）【】《》“”\"'`]+")
+_ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]+")
+_CJK_SEQUENCE_PATTERN = re.compile(r"[\u4e00-\u9fff]+")
+# Keep Chinese and alphanumeric characters; strip separators/punctuation.
+# This avoids wiping CJK queries during normalization.
+_NORMALIZE_PATTERN = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
+_QUERY_FILLER_TERMS = (
+    "这一批",
+    "这批",
+    "本批",
+    "材料",
+    "文件",
+    "文档",
+    "内容",
+    "里面",
+    "其中",
+    "主要",
+    "涉及",
+    "请问",
+    "一下",
+    "是否",
+    "有无",
+    "有没有",
+    "哪些",
+    "哪个",
+    "什么",
+    "怎么",
+    "如何",
+    "时候",
+    "情况",
+    "信息",
+    "告诉我",
+    "帮我",
+)
+_QUERY_JOINER_TERMS = ("以及", "或者", "并且", "和", "与", "及", "或")
+MAX_EVIDENCE_PER_TASK = 2
 
 
 @dataclass(slots=True)
@@ -61,16 +95,56 @@ def _normalize_text(text: str) -> str:
     return _NORMALIZE_PATTERN.sub("", _coerce_text(text)).lower()
 
 
-def _tokenize_query(question: str) -> list[str]:
-    tokens = [token.lower() for token in _TOKEN_PATTERN.findall(_coerce_text(question))]
+def _dedupe_preserve_order(tokens: list[str]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
     for token in tokens:
-        if token in seen:
+        if not token or token in seen:
             continue
         seen.add(token)
         deduped.append(token)
     return deduped
+
+
+def _expand_cjk_query_terms(sequence: str) -> list[str]:
+    cleaned = _normalize_text(sequence)
+    if not cleaned:
+        return []
+
+    for filler in _QUERY_FILLER_TERMS:
+        cleaned = cleaned.replace(filler, " ")
+    for joiner in _QUERY_JOINER_TERMS:
+        cleaned = cleaned.replace(joiner, " ")
+
+    parts = [part.strip() for part in cleaned.split() if len(part.strip()) >= 2]
+    if not parts and len(cleaned) >= 2:
+        parts = [cleaned]
+
+    terms: list[str] = []
+    for part in parts:
+        terms.append(part)
+        if len(part) >= 4:
+            for size in range(min(4, len(part) - 1), 1, -1):
+                terms.append(part[:size])
+                terms.append(part[-size:])
+    return _dedupe_preserve_order(terms)
+
+
+def _tokenize_query(question: str) -> list[str]:
+    body = _coerce_text(question)
+    if not body:
+        return []
+
+    tokens: list[str] = []
+    for token in _ASCII_TOKEN_PATTERN.findall(body):
+        normalized = token.lower()
+        if len(normalized) >= 2 or normalized.isdigit():
+            tokens.append(normalized)
+
+    for sequence in _CJK_SEQUENCE_PATTERN.findall(body):
+        tokens.extend(_expand_cjk_query_terms(sequence))
+
+    return _dedupe_preserve_order(tokens)
 
 
 def split_text_chunks(
@@ -132,6 +206,16 @@ def _build_evidence_snippet(text: str, query_terms: list[str], *, max_chars: int
     return f"{prefix}{snippet}{suffix}"
 
 
+def _term_weight(term: str) -> float:
+    if not term:
+        return 0.0
+    if _ASCII_TOKEN_PATTERN.fullmatch(term):
+        if term.isdigit():
+            return 1.0 if len(term) >= 4 else 0.6
+        return min(2.0, 0.6 + (len(term) * 0.18))
+    return min(2.6, 0.45 + (len(term) * 0.35))
+
+
 def _score_chunk(chunk_text: str, metadata_text: str, query_terms: list[str], normalized_question: str) -> tuple[float, int, int, int]:
     normalized_chunk = _normalize_text(chunk_text)
     normalized_meta = _normalize_text(metadata_text)
@@ -140,14 +224,23 @@ def _score_chunk(chunk_text: str, metadata_text: str, query_terms: list[str], no
     if not query_terms:
         return 0.0, 0, 0, 0
 
-    keyword_hits = sum(1 for term in query_terms if term and term in normalized_chunk)
-    metadata_hits = sum(1 for term in query_terms if term and term in normalized_meta)
-    phrase_hit = int(bool(normalized_question and normalized_question in normalized_chunk))
+    matched_terms = [term for term in query_terms if term and term in normalized_chunk]
+    matched_meta_terms = [term for term in query_terms if term and term in normalized_meta]
+    keyword_hits = len(matched_terms)
+    metadata_hits = len(matched_meta_terms)
 
-    term_count = max(len(query_terms), 1)
-    keyword_score = keyword_hits / term_count
-    metadata_score = metadata_hits / term_count
-    score = min(1.0, (keyword_score * 0.65) + (phrase_hit * 0.2) + (metadata_score * 0.15))
+    long_phrase_terms = [term for term in query_terms if len(term) >= 4]
+    phrase_hit = int(
+        bool(
+            (normalized_question and len(normalized_question) <= 32 and normalized_question in normalized_chunk)
+            or any(term in normalized_chunk for term in long_phrase_terms)
+        )
+    )
+
+    total_weight = max(sum(_term_weight(term) for term in query_terms), 1.0)
+    keyword_score = sum(_term_weight(term) for term in matched_terms) / total_weight
+    metadata_score = sum(_term_weight(term) for term in matched_meta_terms) / total_weight
+    score = min(1.0, (keyword_score * 0.55) + (phrase_hit * 0.25) + (metadata_score * 0.2))
     return round(score, 6), keyword_hits, phrase_hit, metadata_hits
 
 
@@ -193,7 +286,28 @@ def build_ranked_evidence(candidates: list[QATaskCandidate], question: str, *, t
     )
 
     positive = [item for item in ranked if item.score > 0]
-    selected = positive[:top_k] if positive else ranked[:top_k]
+    pool = positive if positive else ranked
+
+    selected: list[EvidenceChunk] = []
+    per_task_count: dict[int, int] = defaultdict(int)
+    for item in pool:
+        if per_task_count[item.task_id] >= MAX_EVIDENCE_PER_TASK:
+            continue
+        selected.append(item)
+        per_task_count[item.task_id] += 1
+        if len(selected) >= top_k:
+            break
+
+    if len(selected) < min(top_k, len(pool)):
+        selected_ids = {(item.task_id, item.chunk_index) for item in selected}
+        for item in pool:
+            key = (item.task_id, item.chunk_index)
+            if key in selected_ids:
+                continue
+            selected.append(item)
+            if len(selected) >= top_k:
+                break
+
     return [
         {
             "task_id": item.task_id,

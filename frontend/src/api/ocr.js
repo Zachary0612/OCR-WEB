@@ -44,6 +44,8 @@ export const searchTasks = (q, page = 1, pageSize = 20) =>
 
 export const getTask = (id) => api.get(`/tasks/${id}`)
 
+export const getTasksProgress = (taskIds = []) => api.post('/tasks/progress', { task_ids: taskIds })
+
 export const updateTask = (id, payload) => api.put(`/tasks/${id}`, payload)
 
 export const aiMergeExtractBatch = (batchId, payload = {}) =>

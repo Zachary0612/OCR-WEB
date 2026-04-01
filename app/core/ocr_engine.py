@@ -31,7 +31,7 @@ MAX_IMAGE_PIXELS = 2500 * 2500
 STRUCTURED_MAX_IMAGE_PIXELS = 5000 * 5000
 
 from app.core.result_validation import normalize_table_data, table_data_to_text, table_html_to_data
-from config import OCR_DEVICE, OCR_LANG, UPLOAD_DIR
+from config import BAIDU_API_KEY, BAIDU_SECRET_KEY, OCR_DEVICE, OCR_LANG, UPLOAD_DIR
 
 
 def _cv_imread(path: str):
@@ -113,6 +113,23 @@ def _require_paddleocr():
         raise RuntimeError("paddleocr is required to run OCR. Install paddleocr>=3.0.0.")
 
 
+def _can_use_baidu_document_api() -> bool:
+    return bool(str(BAIDU_API_KEY or "").strip() and str(BAIDU_SECRET_KEY or "").strip())
+
+
+def _is_known_layout_runtime_error(exc: Exception) -> bool:
+    message = str(exc)
+    return any(
+        token in message
+        for token in (
+            "warpPerspective",
+            "Expected Ptr<cv::UMat>",
+            "Overload resolution failed",
+            "Conversion error: src",
+        )
+    )
+
+
 def get_ocr() -> PaddleOCR:
     """获取 PP-OCRv5 基础 OCR 单例（快速文字识别，无版面分析）"""
     global _ocr_instance
@@ -182,9 +199,27 @@ def _maybe_resize_image(image_path: str, max_pixels: int | None = MAX_IMAGE_PIXE
 def _poly_to_list(poly) -> list[list[float]]:
     if hasattr(poly, "tolist"):
         poly = poly.tolist()
-    if not poly or not isinstance(poly[0], (list, tuple)) or len(poly[0]) < 2:
+    if not poly:
         return []
-    return [[float(p[0]), float(p[1])] for p in poly]
+
+    points: list[list[float]] = []
+
+    def _walk(node):
+        if hasattr(node, "tolist"):
+            node = node.tolist()
+        if isinstance(node, (list, tuple)):
+            if (
+                len(node) >= 2
+                and not isinstance(node[0], (list, tuple, dict))
+                and not isinstance(node[1], (list, tuple, dict))
+            ):
+                points.append([_safe_float(node[0]), _safe_float(node[1])])
+                return
+            for child in node:
+                _walk(child)
+
+    _walk(poly)
+    return points
 
 
 def _item_polygon_points(item, attr_name: str = "polygon_points", dict_key: str = "block_polygon_points") -> list[list[float]]:
@@ -200,10 +235,20 @@ def _item_value(item, *names: str):
         if hasattr(item, name):
             value = getattr(item, name)
             if value is not None:
+                # Convert numpy arrays to lists so that "value or []" works safely downstream.
+                if hasattr(value, "tolist"):
+                    value = value.tolist()
+                    # Empty numpy arrays (len==0) should be treated as missing → continue.
+                    if not value:
+                        continue
                 return value
         if isinstance(item, dict) and name in item:
             value = item.get(name)
             if value is not None:
+                if hasattr(value, "tolist"):
+                    value = value.tolist()
+                    if not value:
+                        continue
                 return value
     return None
 
@@ -218,7 +263,10 @@ def _coerce_layout_bbox(bbox_raw, poly_pts: list[list[float]] | None = None) -> 
             poly = raw_poly
         return (_rect_from_polys([raw_poly]) if raw_poly else []), poly
     if isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) >= 4:
-        return [float(x) for x in bbox_raw[:4]], poly
+        bbox = [_safe_float(x) for x in bbox_raw[:4]]
+        if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            return [], poly
+        return bbox, poly
     return [], poly
 
 
@@ -350,6 +398,34 @@ def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or ""))
 
 
+def _rect_contains_point(rect: list[float], x: float, y: float) -> bool:
+    return len(rect) >= 4 and rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
+
+
+def _rect_from_polys(polys: list[list[list[float]]]) -> list[float]:
+    xs = [pt[0] for poly in polys for pt in poly]
+    ys = [pt[1] for poly in polys for pt in poly]
+    if not xs or not ys:
+        return []
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def _rect_area(rect: list[float]) -> float:
+    if len(rect) < 4:
+        return 0.0
+    return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
+
+
+def _rect_intersection_area(a: list[float], b: list[float]) -> float:
+    if len(a) < 4 or len(b) < 4:
+        return 0.0
+    x1 = max(a[0], b[0])
+    y1 = max(a[1], b[1])
+    x2 = min(a[2], b[2])
+    y2 = min(a[3], b[3])
+    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
+
+
 def _line_rect(line: dict) -> list[float]:
     bbox = line.get("bbox") or []
     if bbox and isinstance(bbox[0], list):
@@ -368,6 +444,101 @@ def _line_center(poly: list[list[float]]) -> tuple[float, float]:
     )
 
 
+def _line_sort_key(line: dict) -> tuple[float, float, int]:
+    rect = _line_rect(line)
+    line_num = int(line.get("line_num") or 0)
+    y = rect[1] if len(rect) >= 4 else 0.0
+    x = rect[0] if len(rect) >= 4 else 0.0
+    return y, x, line_num
+
+
+def _copy_line_payload(line: dict) -> dict:
+    bbox = line.get("bbox") or []
+    copied_bbox = [point[:] for point in bbox] if bbox and isinstance(bbox[0], list) else list(bbox)
+    confidence = line.get("confidence", 0.0)
+    try:
+        confidence_value = float(confidence)
+    except (TypeError, ValueError):
+        confidence_value = 0.0
+    return {
+        "line_num": int(line.get("line_num") or 0),
+        "text": str(line.get("text") or ""),
+        "confidence": round(confidence_value, 4),
+        "bbox": copied_bbox,
+        "bbox_type": "poly" if copied_bbox and isinstance(copied_bbox[0], list) else "rect",
+    }
+
+
+def _is_textual_region(label: str) -> bool:
+    return label not in {"table", "figure", "image", "chart", "seal"}
+
+
+def _collect_region_lines(label: str, bbox: list[float], content: str, page_lines: list[dict]) -> list[dict]:
+    if len(bbox) < 4 or not _is_textual_region(label) or not page_lines:
+        return []
+
+    content_norm = _compact_text(content)
+    candidates = []
+    for line in page_lines:
+        text = str(line.get("text") or "").strip()
+        poly = line.get("bbox") or []
+        if not text or not poly or not isinstance(poly[0], list):
+            continue
+        line_rect = _line_rect(line)
+        if len(line_rect) < 4:
+            continue
+        cx, cy = _line_center(poly)
+        overlap_ratio = _rect_intersection_area(bbox, line_rect) / (_rect_area(line_rect) or 1.0)
+        if _rect_contains_point(bbox, cx, cy) or overlap_ratio >= 0.26:
+            candidates.append((line, overlap_ratio))
+
+    if not candidates:
+        return []
+
+    matched = []
+    if content_norm:
+        for line, overlap_ratio in candidates:
+            line_norm = _compact_text(line.get("text"))
+            if not line_norm:
+                continue
+            if line_norm in content_norm or content_norm in line_norm or _text_similarity(content_norm, line_norm) >= 0.72:
+                matched.append((line, overlap_ratio))
+
+    if matched:
+        if len(content_norm) <= 32:
+            matched.sort(
+                key=lambda item: (_text_similarity(content_norm, _compact_text(item[0].get("text"))), item[1]),
+                reverse=True,
+            )
+            chosen_lines = [matched[0][0]]
+        else:
+            chosen_lines = [item[0] for item in matched]
+    else:
+        fallback = [line for line, overlap_ratio in candidates if overlap_ratio >= 0.45]
+        if fallback:
+            chosen_lines = fallback
+        elif len(content_norm) <= 32:
+            candidates.sort(key=lambda item: item[1], reverse=True)
+            chosen_lines = [candidates[0][0]]
+        else:
+            chosen_lines = [item[0] for item in candidates]
+
+    seen = set()
+    output = []
+    for line in sorted(chosen_lines, key=_line_sort_key):
+        rect = _line_rect(line)
+        key = (
+            int(line.get("line_num") or 0),
+            _compact_text(line.get("text")),
+            tuple(round(value, 1) for value in rect),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(_copy_line_payload(line))
+    return output
+
+
 def _normalize_seal_content(value: Any) -> str:
     lines = [line.strip() for line in str(value or "").splitlines() if line.strip()]
     if not lines:
@@ -380,10 +551,52 @@ def _normalize_seal_content(value: Any) -> str:
     return joined
 
 
-def _seal_content_from_lines(layout_bbox: list[float], page_lines: list[dict], raw_content: str = "") -> str:
-    if len(layout_bbox) < 4 or not page_lines:
-        return _normalize_seal_content(raw_content)
+def _seal_candidate_score(value: Any) -> float:
+    normalized = _normalize_seal_content(value)
+    if not normalized:
+        return -1.0
 
+    compact = _compact_text(normalized)
+    lines = [line for line in normalized.splitlines() if line.strip()]
+    score = min(len(compact), 24) / 12
+    if 1 <= len(lines) <= 3:
+        score += 0.6
+    elif len(lines) == 4:
+        score += 0.3
+    if re.search(r"(章|印|公司|专用|合同|财务|法人|有限|委员会|办公室)", normalized):
+        score += 0.8
+    if re.search(r"\d{6,}", compact):
+        score += 0.35
+    if any(len(_compact_text(line)) > 18 for line in lines):
+        score -= 0.35
+    if len(compact) > 36:
+        score -= 0.45
+    if re.search(r"[，。；、,.;!?]", normalized):
+        score -= 0.65
+    return score
+
+
+def _choose_best_seal_content(raw_content: str, line_content: str) -> str:
+    raw_candidate = _normalize_seal_content(raw_content)
+    line_candidate = _normalize_seal_content(line_content)
+    if not raw_candidate:
+        return line_candidate
+    if not line_candidate:
+        return raw_candidate
+    raw_score = _seal_candidate_score(raw_candidate)
+    line_score = _seal_candidate_score(line_candidate)
+    if line_score > raw_score + 0.2:
+        return line_candidate
+    return raw_candidate
+
+
+def _seal_content_from_lines(layout_bbox: list[float], page_lines: list[dict], raw_content: str = "") -> str:
+    raw_candidate = _normalize_seal_content(raw_content)
+    if len(layout_bbox) < 4 or not page_lines:
+        return raw_candidate
+
+    seal_width = max(0.0, layout_bbox[2] - layout_bbox[0])
+    seal_height = max(0.0, layout_bbox[3] - layout_bbox[1])
     candidates = []
     for line in page_lines:
         text = str(line.get("text") or "").strip()
@@ -396,26 +609,35 @@ def _seal_content_from_lines(layout_bbox: list[float], page_lines: list[dict], r
         cx, cy = _line_center(poly)
         overlap_ratio = _rect_intersection_area(layout_bbox, line_rect) / (_rect_area(line_rect) or 1.0)
         if _rect_contains_point(layout_bbox, cx, cy) or overlap_ratio >= 0.55:
-            candidates.append((text, overlap_ratio))
+            candidates.append((text, overlap_ratio, line_rect))
 
     if not candidates:
-        return _normalize_seal_content(raw_content)
+        return raw_candidate
 
     candidates.sort(key=lambda item: item[1], reverse=True)
     seen = set()
     selected = []
-    for text, _ in candidates:
+    for text, _, line_rect in candidates:
         normalized = _compact_text(text)
         if not normalized or normalized in seen:
             continue
-        seen.add(normalized)
-        if len(normalized) > 24 and re.search(r"[，。；、]", text):
+        line_width = max(0.0, line_rect[2] - line_rect[0])
+        line_height = max(0.0, line_rect[3] - line_rect[1])
+        if line_width and seal_width and line_width > seal_width * 1.2 and len(normalized) > 12:
             continue
+        if line_height and seal_height and line_height > seal_height * 0.65 and len(normalized) > 16:
+            continue
+        if len(normalized) > 28:
+            continue
+        if len(normalized) > 18 and re.search(r"[，。；、]", text):
+            continue
+        seen.add(normalized)
         selected.append(text)
         if len(selected) >= 4:
             break
 
-    return "\n".join(selected) if selected else _normalize_seal_content(raw_content)
+    line_candidate = "\n".join(selected)
+    return _choose_best_seal_content(raw_candidate, line_candidate)
 
 
 def _region_rect(region: dict) -> list[float]:
@@ -437,6 +659,60 @@ def _overlap_on_smaller(a: list[float], b: list[float]) -> float:
     return _rect_intersection_area(a, b) / denominator
 
 
+def _table_text_from_region(region: dict) -> str:
+    table_data = _normalize_table_payload(region.get("table_data"))
+    html = region.get("html")
+    if table_data is None and isinstance(html, str) and _looks_like_html_table(html):
+        try:
+            table_data = _normalize_table_payload(table_html_to_data(html))
+        except Exception:
+            table_data = None
+    if table_data is not None:
+        return _compact_text(table_data_to_text(table_data))
+    return _compact_text(region.get("content"))
+
+
+def _table_region_score(region: dict) -> float:
+    score = 0.0
+    table_data = _normalize_table_payload(region.get("table_data"))
+    html = region.get("html")
+    if table_data is None and isinstance(html, str) and _looks_like_html_table(html):
+        try:
+            table_data = _normalize_table_payload(table_html_to_data(html))
+        except Exception:
+            table_data = None
+    if table_data is not None:
+        non_empty = sum(1 for row in table_data for cell in row if str(cell).strip())
+        score += min(non_empty, 60) * 0.12
+        score += min(len(table_data), 20) * 0.08
+        score += min(max((len(row) for row in table_data), default=0), 12) * 0.14
+    if isinstance(html, str) and _looks_like_html_table(html):
+        score += 1.5
+    score += min(len(_table_text_from_region(region)), 180) / 90
+    return score
+
+
+def _table_regions_look_duplicated(region: dict, other: dict) -> bool:
+    overlap_ratio = _overlap_on_smaller(_region_rect(region), _region_rect(other))
+    if overlap_ratio >= 0.92:
+        return True
+
+    region_text = _table_text_from_region(region)
+    other_text = _table_text_from_region(other)
+    if overlap_ratio >= 0.72:
+        if not region_text or not other_text:
+            return True
+        if region_text in other_text or other_text in region_text:
+            return True
+        if _text_similarity(region_text, other_text) >= 0.88:
+            return True
+
+    if overlap_ratio >= 0.58 and region_text and other_text and _text_similarity(region_text, other_text) >= 0.96:
+        return True
+
+    return False
+
+
 def _filter_output_regions(regions: list[dict]) -> list[dict]:
     if not regions:
         return regions
@@ -449,26 +725,44 @@ def _filter_output_regions(regions: list[dict]) -> list[dict]:
         region_text = _compact_text(region.get("content"))
 
         if region_type == "table":
-            duplicated = any(
-                _overlap_on_smaller(region_rect, table["rect"]) >= 0.82
-                and (
-                    not region_text
-                    or not table["text"]
-                    or region_text in table["text"]
-                    or table["text"] in region_text
-                )
-                for table in kept_tables
+            duplicate_index = next(
+                (index for index, table in enumerate(kept_tables) if _table_regions_look_duplicated(region, table["region"])),
+                None,
             )
-            if duplicated:
+            if duplicate_index is not None:
+                candidate_score = _table_region_score(region)
+                if candidate_score > kept_tables[duplicate_index]["score"]:
+                    kept_index = kept_tables[duplicate_index]["index"]
+                    kept[kept_index] = region
+                    kept_tables[duplicate_index] = {
+                        "region": region,
+                        "rect": region_rect,
+                        "text": _table_text_from_region(region),
+                        "score": candidate_score,
+                        "index": kept_index,
+                    }
                 continue
+
             kept.append(region)
-            kept_tables.append({"rect": region_rect, "text": region_text})
+            kept_tables.append(
+                {
+                    "region": region,
+                    "rect": region_rect,
+                    "text": _table_text_from_region(region),
+                    "score": _table_region_score(region),
+                    "index": len(kept) - 1,
+                }
+            )
             continue
 
         if region_type in {"text", "paragraph", "number"} and region_text:
             covered_by_table = any(
                 _overlap_on_smaller(region_rect, table["rect"]) >= 0.88
-                and (not table["text"] or region_text in table["text"])
+                and (
+                    not table["text"]
+                    or region_text in table["text"]
+                    or table["text"] in region_text
+                )
                 for table in kept_tables
             )
             if covered_by_table:
@@ -490,7 +784,7 @@ def _extract_page_lines(res, line_num_start: int = 0) -> tuple[list[dict], int]:
 
         for idx in range(len(rec_texts)):
             text = rec_texts[idx]
-            confidence = float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
+            confidence = _safe_float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
             bbox = _poly_to_list(dt_polys[idx]) if idx < len(dt_polys) else []
             line_num += 1
             page_lines.append(
@@ -517,10 +811,11 @@ def _predict_structured(pipeline, image_path: str, profile: str = "layout"):
     )
     if profile == "vl":
         import paddle as _paddle
+
         _paddle.device.set_device(OCR_DEVICE)
         logger.info("VL 预测前设置 paddle device: %s", OCR_DEVICE)
-    started_at = time.perf_counter()
 
+    started_at = time.perf_counter()
     while True:
         try:
             results = list(pipeline.predict(input=image_path, **kwargs))
@@ -561,34 +856,6 @@ def _predict_structured(pipeline, image_path: str, profile: str = "layout"):
             )
 
 
-def _rect_contains_point(rect: list[float], x: float, y: float) -> bool:
-    return len(rect) >= 4 and rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
-
-
-def _rect_from_polys(polys: list[list[list[float]]]) -> list[float]:
-    xs = [pt[0] for poly in polys for pt in poly]
-    ys = [pt[1] for poly in polys for pt in poly]
-    if not xs or not ys:
-        return []
-    return [min(xs), min(ys), max(xs), max(ys)]
-
-
-def _rect_area(rect: list[float]) -> float:
-    if len(rect) < 4:
-        return 0.0
-    return max(0.0, rect[2] - rect[0]) * max(0.0, rect[3] - rect[1])
-
-
-def _rect_intersection_area(a: list[float], b: list[float]) -> float:
-    if len(a) < 4 or len(b) < 4:
-        return 0.0
-    x1 = max(a[0], b[0])
-    y1 = max(a[1], b[1])
-    x2 = min(a[2], b[2])
-    y2 = min(a[3], b[3])
-    return max(0.0, x2 - x1) * max(0.0, y2 - y1)
-
-
 def _text_similarity(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
@@ -599,50 +866,11 @@ def _text_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _precise_region_bbox(label: str, bbox: list[float], content: str, page_lines: list[dict]):
-    if len(bbox) < 4 or label in {"table", "figure", "image", "seal"}:
+def _precise_region_bbox_from_lines(label: str, bbox: list[float], region_lines: list[dict]):
+    if len(bbox) < 4 or not _is_textual_region(label):
         return bbox, "rect"
 
-    candidates = []
-    for line in page_lines:
-        poly = line.get("bbox") or []
-        if not poly or not isinstance(poly[0], list):
-            continue
-        line_rect = _rect_from_polys([poly])
-        cx = sum(p[0] for p in poly) / len(poly)
-        cy = sum(p[1] for p in poly) / len(poly)
-        inter_area = _rect_intersection_area(bbox, line_rect)
-        line_area = _rect_area(line_rect) or 1.0
-        overlap_ratio = inter_area / line_area
-        if _rect_contains_point(bbox, cx, cy) or overlap_ratio >= 0.45:
-            candidates.append((line, overlap_ratio))
-
-    if not candidates:
-        return bbox, "rect"
-
-    content_norm = "".join(str(content or "").split())
-    matched = []
-    if content_norm:
-        for line, overlap_ratio in candidates:
-            line_norm = "".join(str(line.get("text") or "").split())
-            sim = _text_similarity(content_norm, line_norm)
-            if line_norm and sim >= 0.72:
-                matched.append((line, overlap_ratio, sim))
-
-    if matched:
-        matched.sort(key=lambda item: (item[2], item[1]), reverse=True)
-        if len(content_norm) <= 32:
-            chosen_lines = [matched[0][0]]
-        else:
-            chosen_lines = [item[0] for item in matched]
-    else:
-        candidates.sort(key=lambda item: item[1], reverse=True)
-        if len(content_norm) <= 32:
-            chosen_lines = [candidates[0][0]]
-        else:
-            chosen_lines = [item[0] for item in candidates if item[1] >= 0.45] or [candidates[0][0]]
-
-    polys = [line["bbox"] for line in chosen_lines if line.get("bbox")]
+    polys = [line["bbox"] for line in region_lines if line.get("bbox") and isinstance(line["bbox"][0], list)]
     if not polys:
         return bbox, "rect"
     if len(polys) == 1:
@@ -672,10 +900,10 @@ def get_vl_pipeline():
         finally:
             if old_flag is not None:
                 os.environ["FLAGS_json_format_model"] = old_flag
+
     return _vl_pipeline
 
 
-# ===== PP-OCRv5 基础识别 =====
 def ocr_image_basic(image_path: str) -> dict:
     """
     使用 PP-OCRv5 基础识别（快速，无版面分析）
@@ -687,23 +915,23 @@ def ocr_image_basic(image_path: str) -> dict:
     lines = []
     if results:
         for res in results:
-            rec_texts = res.get("rec_texts", [])
-            rec_scores = res.get("rec_scores", [])
-            dt_polys = res.get("dt_polys", [])
-            for idx in range(len(rec_texts)):
-                text = rec_texts[idx]
-                confidence = float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
-                bbox = dt_polys[idx].tolist() if idx < len(dt_polys) and hasattr(dt_polys[idx], 'tolist') else []
-                lines.append({
-                    "line_num": idx + 1,
-                    "text": text,
-                    "confidence": round(confidence, 4),
-                    "bbox": bbox,
-                })
+            rec_texts = _item_value(res, "rec_texts") or []
+            rec_scores = _item_value(res, "rec_scores") or []
+            dt_polys = _item_value(res, "dt_polys") or []
+            for idx, text in enumerate(rec_texts):
+                confidence = _safe_float(rec_scores[idx]) if idx < len(rec_scores) else 0.0
+                bbox = _poly_to_list(dt_polys[idx]) if idx < len(dt_polys) else []
+                lines.append(
+                    {
+                        "line_num": idx + 1,
+                        "text": text,
+                        "confidence": round(confidence, 4),
+                        "bbox": bbox,
+                    }
+                )
     return {"lines": lines}
 
 
-# ===== PP-StructureV3 版面解析 =====
 def ocr_image_with_layout(image_path: str) -> dict:
     """
     使用 PP-StructureV3 版面解析（layout）
@@ -729,13 +957,14 @@ def ocr_image_with_layout(image_path: str) -> dict:
             content = str(_item_value(item, "block_content", "content") or "")
             table_data, table_html, content = _extract_table_payload(item, str(raw_label), content)
             label = _canonical_region_type(raw_label, has_table_payload=table_data is not None or bool(table_html))
+            region_lines = _collect_region_lines(label, layout_bbox, content, page_lines)
             if label == "seal":
                 content = _seal_content_from_lines(layout_bbox, page_lines, raw_content=content)
 
             if poly_pts:
                 precise_bbox, bbox_type = poly_pts, "poly"
             else:
-                precise_bbox, bbox_type = _precise_region_bbox(label, layout_bbox, content, page_lines)
+                precise_bbox, bbox_type = _precise_region_bbox_from_lines(label, layout_bbox, region_lines)
 
             region = {
                 "type": label,
@@ -748,12 +977,13 @@ def ocr_image_with_layout(image_path: str) -> dict:
                 region["html"] = table_html
             if table_data is not None:
                 region["table_data"] = table_data
+            if region_lines:
+                region["region_lines"] = region_lines
             regions.append(region)
 
     return {"regions": _filter_output_regions(regions), "lines": lines}
 
 
-# ===== PaddleOCR-VL-1.5 视觉语言模型识别 =====
 def ocr_image_with_vl(image_path: str) -> dict:
     """
     使用 PaddleOCR-VL-1.5 视觉语言模型识别（官网同款，识别质量最佳）
@@ -775,6 +1005,7 @@ def ocr_image_with_vl(image_path: str) -> dict:
             bbox, poly_pts = _coerce_layout_bbox(bbox_raw, poly_pts)
             table_data, table_html, content = _extract_table_payload(item, str(raw_label), content)
             label = _canonical_region_type(raw_label, has_table_payload=table_data is not None or bool(table_html))
+            region_lines = _collect_region_lines(label, bbox, content, page_lines)
             if label == "seal":
                 content = _seal_content_from_lines(bbox, page_lines, raw_content=content)
 
@@ -795,12 +1026,13 @@ def ocr_image_with_vl(image_path: str) -> dict:
                 region["html"] = table_html
             if table_data is not None:
                 region["table_data"] = table_data
+            if region_lines:
+                region["region_lines"] = region_lines
             regions.append(region)
 
     return {"regions": _filter_output_regions(regions), "lines": []}
 
 
-# ===== PDF 转图片 =====
 def pdf_to_images(pdf_path: str) -> list[str]:
     """将 PDF 转换为图片列表（保存到 uploads 目录避免中文路径问题）"""
     fitz_module = _require_fitz()
@@ -823,6 +1055,440 @@ def pdf_to_images(pdf_path: str) -> list[str]:
     return image_paths
 
 
+# ===== 百度 AI 云文档解析 API =====
+
+_BAIDU_TYPE_MAP: dict[str, str] = {
+    "abstract": "text",
+    "algorithm": "text",
+    "aside_text": "text",
+    "chart": "chart",
+    "content": "text",
+    "display_formula": "text",
+    "doc_title": "doc_title",
+    "figure_title": "text",
+    "footer": "footer",
+    "footer_image": "image",
+    "footnote": "text",
+    "formula_number": "number",
+    "head_tail": "other_text",
+    "header": "header",
+    "header_image": "image",
+    "image": "image",
+    "inline_formula": "text",
+    "number": "number",
+    "paragraph_title": "paragraph_title",
+    "reference": "text",
+    "reference_content": "text",
+    "seal": "seal",
+    "table": "table",
+    "text": "text",
+    "title": "paragraph_title",
+    "vertical_text": "text",
+}
+
+_baidu_token_cache: dict = {}
+
+
+def _canonical_baidu_type(raw_type: str) -> str:
+    return _BAIDU_TYPE_MAP.get(str(raw_type).lower(), "text")
+
+
+def _get_baidu_access_token() -> str:
+    import requests as _requests
+
+    now = time.time()
+    if _baidu_token_cache.get("token") and now < _baidu_token_cache.get("expires_at", 0) - 300:
+        return _baidu_token_cache["token"]
+
+    if not BAIDU_API_KEY or not BAIDU_SECRET_KEY:
+        raise RuntimeError(
+            "未配置百度 AI 密钥，请在 .env 文件中设置 BAIDU_API_KEY 和 BAIDU_SECRET_KEY。"
+        )
+
+    resp = _requests.get(
+        "https://aip.baidubce.com/oauth/2.0/token",
+        params={
+            "grant_type": "client_credentials",
+            "client_id": BAIDU_API_KEY,
+            "client_secret": BAIDU_SECRET_KEY,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "access_token" not in data:
+        raise RuntimeError(f"百度 AI 鉴权失败: {data}")
+
+    token = data["access_token"]
+    expires_in = int(data.get("expires_in", 2592000))
+    _baidu_token_cache["token"] = token
+    _baidu_token_cache["expires_at"] = now + expires_in
+    logger.info("百度 AI 访问令牌已刷新，有效期 %d 秒。", expires_in)
+    return token
+
+
+def _parse_markdown_table(markdown: str) -> list[list[str]]:
+    rows = []
+    for line in markdown.strip().splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        if re.match(r"^[\|\s\-:]+$", line):
+            continue
+        cells = line.split("|")
+        if cells and cells[0].strip() == "":
+            cells = cells[1:]
+        if cells and cells[-1].strip() == "":
+            cells = cells[:-1]
+        cells = [c.strip() for c in cells]
+        if cells:
+            rows.append(cells)
+    return rows if rows else [[""]]
+
+
+def _markdown_table_to_html(markdown: str) -> str:
+    lines = [l.strip() for l in markdown.strip().splitlines() if l.strip()]
+    if not lines:
+        return ""
+    header_done = False
+    html_rows = []
+    for line in lines:
+        if "|" not in line:
+            continue
+        if re.match(r"^[\|\s\-:]+$", line):
+            header_done = True
+            continue
+        cells = line.split("|")
+        if cells and cells[0].strip() == "":
+            cells = cells[1:]
+        if cells and cells[-1].strip() == "":
+            cells = cells[:-1]
+        cells = [c.strip() for c in cells]
+        if not cells:
+            continue
+        if not header_done:
+            row_html = "<tr>" + "".join(f"<th>{c}</th>" for c in cells) + "</tr>"
+        else:
+            row_html = "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
+        html_rows.append(row_html)
+    return f"<table>{''.join(html_rows)}</table>" if html_rows else ""
+
+
+_HTML_IMAGE_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*]\([^)]+\)")
+
+
+def _sanitize_baidu_table_cell(value: Any) -> str:
+    text = str(value or "")
+    text = _HTML_IMAGE_TAG_RE.sub(" ", text)
+    text = _MARKDOWN_IMAGE_RE.sub(" ", text)
+    text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _collapse_obvious_merged_rows(rows: list[list[str]]) -> list[list[str]]:
+    normalized_rows: list[list[str]] = []
+    for row in rows:
+        cells = [str(cell or "").strip() for cell in row]
+        non_empty = [cell for cell in cells if cell]
+        if non_empty and len(set(non_empty)) == 1 and len(non_empty) >= 3:
+            normalized_rows.append([non_empty[0]] + [""] * (len(cells) - 1))
+            continue
+        normalized_rows.append(cells)
+    return normalized_rows
+
+
+def _extract_baidu_table_data(table_info: dict) -> list[list[str]]:
+    cells = table_info.get("cells") or []
+    matrix = table_info.get("matrix") or []
+    if cells and matrix:
+        cell_texts = [_sanitize_baidu_table_cell(cell.get("text")) for cell in cells]
+        seen_global: set[int] = set()
+        result: list[list[str]] = []
+        for row in matrix:
+            seen_in_row: set[int] = set()
+            row_cells: list[str] = []
+            for raw_idx in row:
+                try:
+                    idx = int(raw_idx)
+                except (TypeError, ValueError):
+                    row_cells.append("")
+                    continue
+                if idx < 0 or idx >= len(cell_texts):
+                    row_cells.append("")
+                    continue
+
+                # Matrix indices are reused for merged cells.
+                # Keep the first appearance and blank span-expansion positions.
+                if idx in seen_in_row or idx in seen_global:
+                    row_cells.append("")
+                    continue
+
+                row_cells.append(cell_texts[idx])
+                seen_in_row.add(idx)
+                seen_global.add(idx)
+
+            result.append(row_cells)
+
+        result = [row for row in result if any(str(cell or "").strip() for cell in row)]
+        result = _collapse_obvious_merged_rows(result)
+        normalized = _normalize_table_payload(result)
+        return normalized if normalized is not None else [[""]]
+    markdown = str(table_info.get("markdown") or "")
+    if markdown:
+        parsed = _parse_markdown_table(markdown)
+        parsed = [[_sanitize_baidu_table_cell(cell) for cell in row] for row in parsed]
+        parsed = _collapse_obvious_merged_rows(parsed)
+        normalized = _normalize_table_payload(parsed)
+        return normalized if normalized is not None else [[""]]
+    return [[""]]
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return default
+        try:
+            return float(text)
+        except ValueError:
+            return default
+    if isinstance(value, (list, tuple)) and value:
+        return _safe_float(value[0], default)
+    return default
+
+
+def _baidu_location_to_bbox(raw_location: Any) -> list[float]:
+    if hasattr(raw_location, "tolist"):
+        raw_location = raw_location.tolist()
+
+    if isinstance(raw_location, dict):
+        x = _safe_float(raw_location.get("x", raw_location.get("left", 0.0)))
+        y = _safe_float(raw_location.get("y", raw_location.get("top", 0.0)))
+        width = _safe_float(raw_location.get("w", raw_location.get("width", 0.0)))
+        height = _safe_float(raw_location.get("h", raw_location.get("height", 0.0)))
+        if width > 0 and height > 0:
+            return [x, y, x + width, y + height]
+        right = _safe_float(raw_location.get("right", x))
+        bottom = _safe_float(raw_location.get("bottom", y))
+        if right > x and bottom > y:
+            return [x, y, right, bottom]
+        return []
+
+    if not isinstance(raw_location, (list, tuple)) or not raw_location:
+        return []
+
+    first_item = raw_location[0]
+    if isinstance(first_item, (list, tuple)):
+        poly = _poly_to_list(raw_location)
+        return _rect_from_polys([poly]) if poly else []
+
+    if len(raw_location) >= 8:
+        poly = []
+        for index in range(0, min(len(raw_location), 8), 2):
+            poly.append([_safe_float(raw_location[index]), _safe_float(raw_location[index + 1])])
+        return _rect_from_polys([poly]) if poly else []
+
+    if len(raw_location) >= 4:
+        x = _safe_float(raw_location[0])
+        y = _safe_float(raw_location[1])
+        width = _safe_float(raw_location[2])
+        height = _safe_float(raw_location[3])
+        if width <= 0 or height <= 0:
+            return []
+        return [x, y, x + width, y + height]
+
+    return []
+
+
+def _map_baidu_page(baidu_page: dict) -> dict:
+    layouts = baidu_page.get("layouts") or []
+    tables_by_id = {
+        t["layout_id"]: t
+        for t in (baidu_page.get("tables") or [])
+        if t.get("layout_id")
+    }
+    images_by_id = {
+        img["layout_id"]: img
+        for img in (baidu_page.get("images") or [])
+        if img.get("layout_id")
+    }
+
+    regions = []
+    for layout in layouts:
+        try:
+            layout_id = layout.get("layout_id", "")
+            raw_type = str(layout.get("type") or "text")
+            text = str(layout.get("text") or "").strip()
+            bbox = _baidu_location_to_bbox(layout.get("position") or [])
+
+            label = _canonical_baidu_type(raw_type)
+            table_data = None
+            table_html = None
+
+            if raw_type == "table" and layout_id in tables_by_id:
+                tbl = tables_by_id[layout_id]
+                table_data = _extract_baidu_table_data(tbl)
+                md = tbl.get("markdown") or ""
+                if md:
+                    table_html = _markdown_table_to_html(md)
+                text = ""
+            elif raw_type == "image" and layout_id in images_by_id:
+                text = ""
+
+            region_lines = []
+            for span in (layout.get("span_boxes") or []):
+                try:
+                    span_text = str(span.get("text") or "").strip()
+                    span_bbox = _baidu_location_to_bbox(span.get("location") or [])
+                    if span_text:
+                        region_lines.append({
+                            "text": span_text,
+                            "bbox": span_bbox,
+                            "bbox_type": "rect",
+                            "confidence": 0.99,
+                        })
+                except Exception as span_exc:
+                    logger.warning("Baidu span 瑙ｆ瀽宸茶烦杩囷細%s", span_exc)
+
+            region: dict[str, Any] = {
+                "type": label,
+                "bbox": bbox,
+                "bbox_type": "rect",
+                "layout_bbox": bbox,
+                "content": text,
+            }
+            if table_html:
+                region["html"] = table_html
+            if table_data is not None:
+                region["table_data"] = table_data
+            if region_lines:
+                region["region_lines"] = region_lines
+            regions.append(region)
+        except Exception as layout_exc:
+            logger.warning("Baidu layout 瑙ｆ瀽宸茶烦杩囷細%s", layout_exc)
+
+    return {"regions": _filter_output_regions(regions), "lines": []}
+
+
+def _map_baidu_result_to_document(raw: dict) -> dict:
+    pages = []
+    all_texts = []
+
+    for baidu_page in raw.get("pages") or []:
+        page_num = int(baidu_page.get("page_num") or 0) + 1
+        mapped = _map_baidu_page(baidu_page)
+        mapped["page_num"] = page_num
+        pages.append(mapped)
+
+        page_texts = []
+        for region in mapped.get("regions") or []:
+            if region["type"] == "table":
+                page_texts.append("[表格]")
+            elif region.get("content"):
+                page_texts.append(region["content"])
+        all_texts.append("\n".join(page_texts))
+
+    if not pages:
+        pages = [{"page_num": 1, "regions": [], "lines": []}]
+        all_texts = [""]
+
+    if len(pages) > 1:
+        full_text = "\n\n".join(
+            f"--- 第 {i + 1} 页 ---\n{t}" for i, t in enumerate(all_texts)
+        )
+    else:
+        full_text = all_texts[0] if all_texts else ""
+
+    return {"page_count": len(pages), "pages": pages, "full_text": full_text, "mode": "baidu_vl"}
+
+
+def ocr_document_baidu_vl(file_path: str) -> dict:
+    """
+    使用百度 AI 云文档解析 API（PaddleOCR-VL-1.5）识别文档（图片或 PDF）。
+    返回格式与 ocr_document() 一致。
+    """
+    import base64
+
+    import requests as _requests
+
+    token = _get_baidu_access_token()
+    file_name = Path(file_path).name
+
+    logger.info("百度 AI 文档解析：提交文件 %s", file_name)
+    with open(file_path, "rb") as f:
+        file_data = base64.b64encode(f.read()).decode("utf-8")
+
+    submit_url = (
+        "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task"
+        f"?access_token={token}"
+    )
+    submit_resp = _requests.post(
+        submit_url,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        data={
+            "file_data": file_data,
+            "file_name": file_name,
+            "recognize_seal": "true",
+            "return_span_boxes": "true",
+            "analysis_chart": "true",
+        },
+        timeout=120,
+    )
+    submit_resp.raise_for_status()
+    submit_data = submit_resp.json()
+
+    error_code = submit_data.get("error_code")
+    if error_code not in (0, "0", None, ""):
+        raise RuntimeError(
+            f"百度文档解析提交失败 ({error_code}): {submit_data.get('error_msg', '')}"
+        )
+
+    baidu_task_id = (submit_data.get("result") or {}).get("task_id")
+    if not baidu_task_id:
+        raise RuntimeError(f"百度文档解析未返回 task_id: {submit_data}")
+
+    logger.info("百度任务已提交 task_id=%s，开始轮询结果...", baidu_task_id)
+    query_url = (
+        "https://aip.baidubce.com/rest/2.0/brain/online/v2/paddle-vl-parser/task/query"
+        f"?access_token={token}"
+    )
+
+    for poll_idx in range(60):
+        time.sleep(5)
+        query_resp = _requests.post(
+            query_url,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={"task_id": baidu_task_id},
+            timeout=30,
+        )
+        query_resp.raise_for_status()
+        query_data = query_resp.json()
+        result = query_data.get("result") or {}
+        status = result.get("status")
+        logger.info(
+            "百度任务 %s 状态: %s（轮询 %d/60）", baidu_task_id, status, poll_idx + 1
+        )
+
+        if status == "success":
+            parse_result_url = result.get("parse_result_url")
+            if not parse_result_url:
+                raise RuntimeError("百度任务成功但未返回 parse_result_url")
+            raw_resp = _requests.get(parse_result_url, timeout=60)
+            raw_resp.raise_for_status()
+            return _map_baidu_result_to_document(raw_resp.json())
+
+        if status == "failed":
+            raise RuntimeError(
+                f"百度文档解析任务失败: {result.get('task_error') or '未知错误'}"
+            )
+
+    raise RuntimeError(f"百度文档解析任务超时 (task_id={baidu_task_id})")
+
+
 # ===== 统一文档识别入口 =====
 def ocr_document(file_path: str, mode: str = "layout") -> dict:
     """
@@ -835,6 +1501,9 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
 
     返回: {"page_count", "pages": [{page_num, regions?, lines}], "full_text", "mode"}
     """
+    if mode == "baidu_vl" or (mode == "vl" and BAIDU_API_KEY):
+        return ocr_document_baidu_vl(file_path)
+
     file_ext = Path(file_path).suffix.lower()
     pages = []
     temp_images = []
@@ -894,6 +1563,16 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
             "full_text": full_text,
             "mode": mode,
         }
+    except Exception as exc:
+        if mode == "layout" and _can_use_baidu_document_api() and _is_known_layout_runtime_error(exc):
+            logger.warning(
+                "PP-StructureV3 local layout failed for %s with a known runtime error. "
+                "Falling back to Baidu document parsing.",
+                Path(file_path).name,
+                exc_info=True,
+            )
+            return ocr_document_baidu_vl(file_path)
+        raise
     finally:
         for tmp in temp_images:
             try:

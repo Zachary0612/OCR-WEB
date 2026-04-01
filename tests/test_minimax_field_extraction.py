@@ -56,6 +56,16 @@ class MiniMaxServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[尾部摘录]", excerpt)
         self.assertLessEqual(len(excerpt), 800)
 
+    def test_large_field_extraction_uses_longer_timeout(self):
+        self.assertEqual(
+            minimax_service._resolve_field_extraction_timeout(page_count=2, excerpt_text="短文本"),
+            minimax_service.MINIMAX_TIMEOUT_SECONDS,
+        )
+        self.assertGreaterEqual(
+            minimax_service._resolve_field_extraction_timeout(page_count=12, excerpt_text="短文本"),
+            180.0,
+        )
+
     def test_merge_rule_and_llm_fields_builds_recommended_and_conflicts(self):
         rule_fields = {
             "档号": "A-001",
@@ -195,6 +205,90 @@ class MiniMaxServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["llm_fields"]["题名"], "关于测试的通知")
         self.assertEqual(result["llm_fields"]["页数"], "3")
         self.assertEqual(result["raw_usage"]["total_tokens"], 20)
+
+    async def test_response_with_think_prefix_is_normalized(self):
+        body = {
+            "档号": "A-002",
+            "文号": "测试〔2024〕2号",
+            "责任者": "某单位",
+            "题名": "关于带思考标签的通知",
+            "日期": "2024-02-03",
+            "页数": 4,
+            "密级": "",
+            "备注": "",
+            "evidence": {"题名": "关于带思考标签的通知"},
+        }
+        payload = {
+            "model": "MiniMax-M2.7",
+            "choices": [
+                {
+                    "message": {
+                        "content": "<think>\ninternal reasoning\n</think>\n\n" + json.dumps(body, ensure_ascii=False)
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 24},
+        }
+        with (
+            patch.object(minimax_service, "MINIMAX_ENABLED", True),
+            patch.object(minimax_service, "MINIMAX_API_KEY", "test-key"),
+            patch.object(
+                minimax_service.httpx,
+                "AsyncClient",
+                return_value=StubAsyncClient(response=StubResponse(payload=payload)),
+            ),
+        ):
+            result = await minimax_service.call_minimax_field_extraction(
+                filename="demo.pdf",
+                page_count=4,
+                full_text="关于带思考标签的通知",
+                result_json=[],
+                rule_fields=minimax_service._blank_fields(),
+            )
+        self.assertEqual(result["llm_fields"]["题名"], "关于带思考标签的通知")
+        self.assertEqual(result["raw_usage"]["total_tokens"], 24)
+
+    async def test_response_with_prose_wrapper_is_normalized(self):
+        body = {
+            "档号": "A-003",
+            "文号": "测试〔2024〕3号",
+            "责任者": "某单位",
+            "题名": "关于带说明文本的通知",
+            "日期": "2024-03-04",
+            "页数": 2,
+            "密级": "",
+            "备注": "",
+            "evidence": {"题名": "关于带说明文本的通知"},
+        }
+        payload = {
+            "model": "MiniMax-M2.7",
+            "choices": [
+                {
+                    "message": {
+                        "content": "以下为抽取结果，请以 JSON 为准：\n" + json.dumps(body, ensure_ascii=False) + "\n说明：字段按证据整理。"
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 26},
+        }
+        with (
+            patch.object(minimax_service, "MINIMAX_ENABLED", True),
+            patch.object(minimax_service, "MINIMAX_API_KEY", "test-key"),
+            patch.object(
+                minimax_service.httpx,
+                "AsyncClient",
+                return_value=StubAsyncClient(response=StubResponse(payload=payload)),
+            ),
+        ):
+            result = await minimax_service.call_minimax_field_extraction(
+                filename="demo.pdf",
+                page_count=2,
+                full_text="关于带说明文本的通知",
+                result_json=[],
+                rule_fields=minimax_service._blank_fields(),
+            )
+        self.assertEqual(result["llm_fields"]["题名"], "关于带说明文本的通知")
+        self.assertEqual(result["raw_usage"]["total_tokens"], 26)
 
 
 class FakeExecuteResult:
@@ -514,6 +608,11 @@ class BatchEvaluationRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["batch_id"], "batch-1")
 
+    def test_get_truth_maps_runtime_error_to_503(self):
+        with patch("app.api.routes.get_batch_evaluation_truth", AsyncMock(side_effect=RuntimeError("db locked"))):
+            response = self.client.get("/api/ocr/batches/batch-1/evaluation-truth")
+        self.assertEqual(response.status_code, 503)
+
     def test_put_truth_validation_error(self):
         with patch("app.api.routes.save_batch_evaluation_truth", AsyncMock(side_effect=ValueError("invalid task"))):
             response = self.client.put(
@@ -540,6 +639,11 @@ class BatchEvaluationRouteTests(unittest.TestCase):
         with patch("app.api.routes.get_batch_evaluation_metrics", AsyncMock(return_value=None)):
             response = self.client.get("/api/ocr/batches/batch-1/evaluation-metrics")
         self.assertEqual(response.status_code, 404)
+
+    def test_get_metrics_maps_runtime_error_to_503(self):
+        with patch("app.api.routes.get_batch_evaluation_metrics", AsyncMock(side_effect=RuntimeError("cache miss"))):
+            response = self.client.get("/api/ocr/batches/batch-1/evaluation-metrics")
+        self.assertEqual(response.status_code, 503)
 
     def test_get_ai_report_success(self):
         payload = {

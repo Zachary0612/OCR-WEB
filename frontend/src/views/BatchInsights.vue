@@ -2,7 +2,7 @@
   <div class="mx-auto max-w-7xl px-6 py-6">
     <div class="mb-4 flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-bold text-gray-800">批次评测中心</h1>
+        <h1 class="text-xl font-bold text-gray-800">批次分析中心</h1>
         <p class="text-xs text-gray-500">批次：{{ batchId }}</p>
       </div>
       <div class="flex items-center space-x-2">
@@ -14,7 +14,7 @@
           :disabled="refreshing || loading"
           @click="reloadWithRecompute"
         >
-          {{ refreshing ? '重算中...' : '手动重算' }}
+          {{ refreshing ? '分析中...' : '重新分析' }}
         </button>
       </div>
     </div>
@@ -32,14 +32,14 @@
         :class="activeTab === 'truth' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
         @click="activeTab = 'truth'"
       >
-        真值标注
+        人工核对
       </button>
       <button
         class="rounded-lg px-3 py-1.5 text-xs font-medium"
         :class="activeTab === 'metrics' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
         @click="activeTab = 'metrics'"
       >
-        评测结果
+        质量结果
       </button>
       <button
         class="rounded-lg px-3 py-1.5 text-xs font-medium"
@@ -51,11 +51,19 @@
     </div>
 
     <div v-if="loading" class="rounded-xl border border-gray-200 bg-white px-4 py-10 text-center text-sm text-gray-500">
-      正在加载批次评测数据...
+      正在加载批次分析数据...
     </div>
     <div v-else-if="error" class="rounded-xl border border-red-200 bg-red-50 px-4 py-6 text-sm text-red-600">{{ error }}</div>
 
     <div v-else>
+      <div v-if="truthWarning || metricsWarning" class="mb-4 space-y-2">
+        <p v-if="truthWarning" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+          {{ truthWarning }}
+        </p>
+        <p v-if="metricsWarning" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
+          {{ metricsWarning }}
+        </p>
+      </div>
       <div v-if="activeTab === 'overview'" class="space-y-4">
         <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
           <div class="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
@@ -76,18 +84,18 @@
           <h2 class="mb-2 text-sm font-semibold text-gray-800">分组质量摘要</h2>
           <p class="mb-2 text-xs text-gray-600">
             平均同文档置信度：{{ pct(operationalMetrics?.avg_same_document_confidence) }}，
-            规则/LLM 平均一致率：{{ pct(operationalMetrics?.avg_rule_llm_agreement) }}
+            规则/智能平均一致率：{{ pct(operationalMetrics?.avg_rule_llm_agreement) }}
           </p>
           <p v-if="truthMetrics?.grouping" class="text-xs text-emerald-700">
-            真值分组 F1：{{ pct(truthMetrics.grouping.pairwise_f1) }}，
+            人工核对分组综合分：{{ pct(truthMetrics.grouping.pairwise_f1) }}，
             任务分配准确率：{{ pct(truthMetrics.grouping.task_assignment_accuracy) }}
           </p>
-          <p v-else class="text-xs text-amber-600">当前尚无真值，先在“真值标注”页签录入再评测。</p>
+          <p v-else class="text-xs text-amber-600">当前尚无人工核对数据，请先在“人工核对”页签补充后再查看质量结果。</p>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
           <div class="mb-2 flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-gray-800">AI 诊断报告</h2>
+            <h2 class="text-sm font-semibold text-gray-800">智能诊断报告</h2>
             <div class="flex items-center space-x-2">
               <button
                 class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
@@ -101,7 +109,7 @@
                 :disabled="loadingAiReport"
                 @click="loadAiReport(true)"
               >
-                强制重算
+                重新生成
               </button>
             </div>
           </div>
@@ -109,7 +117,7 @@
           <div v-else-if="aiReport" class="space-y-2 text-xs text-gray-700">
             <p class="rounded bg-gray-50 px-3 py-2 leading-6">{{ aiReport.summary }}</p>
             <p class="text-[11px] text-gray-500">
-              模型：{{ aiReport.provider }}/{{ aiReport.model }} · 生成时间：{{ formatTime(aiReport.generated_at) }}
+              生成时间：{{ formatTime(aiReport.generated_at) }}
             </p>
             <div class="grid grid-cols-1 gap-2 md:grid-cols-3">
               <div class="rounded bg-emerald-50 px-3 py-2">
@@ -132,7 +140,7 @@
               </div>
             </div>
           </div>
-          <p v-else class="text-xs text-gray-500">点击“生成报告”后，系统会基于本批次的评测结果输出可解释诊断。</p>
+          <p v-else class="text-xs text-gray-500">点击“生成报告”后，系统会基于本批次的质量结果输出可解释诊断。</p>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
@@ -148,16 +156,16 @@
 
       <div v-else-if="activeTab === 'truth'" class="space-y-4">
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">任务分组真值</h2>
-          <p class="mb-3 text-xs text-gray-500">给每个任务填写 `doc_key`，同一文档填同一 key（例如 doc-A）。</p>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">分组核对</h2>
+          <p class="mb-3 text-xs text-gray-500">给每份材料填写分组编号（同一文档填同一个编号，例如 group-A）。</p>
           <div class="max-h-72 overflow-auto">
             <table class="w-full text-left text-xs">
               <thead class="sticky top-0 bg-gray-50 text-gray-500">
                 <tr>
-                  <th class="px-2 py-2">task_id</th>
+                  <th class="px-2 py-2">材料编号</th>
                   <th class="px-2 py-2">文件名</th>
                   <th class="px-2 py-2">预测组</th>
-                  <th class="px-2 py-2">doc_key</th>
+                  <th class="px-2 py-2">分组编号</th>
                   <th class="px-2 py-2">操作</th>
                 </tr>
               </thead>
@@ -175,8 +183,12 @@
                     />
                   </td>
                   <td class="px-2 py-2">
-                    <button class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-200" @click="openTask(item.task_id)">
-                      查看
+                    <button
+                      class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-200 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
+                      :disabled="verifyingTaskId === Number(item.task_id)"
+                      @click="openTask(item.task_id)"
+                    >
+                      {{ verifyingTaskId === Number(item.task_id) ? '校验中...' : '查看' }}
                     </button>
                   </td>
                 </tr>
@@ -187,9 +199,9 @@
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
           <div class="mb-2 flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-gray-800">字段真值</h2>
+            <h2 class="text-sm font-semibold text-gray-800">信息核对</h2>
             <button class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-200" @click="addEmptyDocTruth">
-              新增文档真值
+              新增核对条目
             </button>
           </div>
           <div class="max-h-[420px] space-y-3 overflow-auto">
@@ -199,7 +211,7 @@
                   v-model="doc.doc_key"
                   type="text"
                   class="rounded border border-gray-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
-                  placeholder="doc_key"
+                  placeholder="分组编号"
                 />
                 <button class="rounded bg-red-50 px-2 py-1 text-[11px] text-red-600 hover:bg-red-100" @click="removeDocTruth(doc.doc_key)">
                   删除
@@ -224,7 +236,7 @@
               :disabled="savingTruth"
               @click="saveTruth"
             >
-              {{ savingTruth ? '保存中...' : '保存真值并刷新评测' }}
+              {{ savingTruth ? '保存中...' : '保存核对并刷新结果' }}
             </button>
           </div>
           <p v-if="truthSaveMessage" class="mt-2 text-xs text-emerald-600">{{ truthSaveMessage }}</p>
@@ -233,23 +245,23 @@
 
       <div v-else-if="activeTab === 'metrics'" class="space-y-4">
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">运营指标（无需真值）</h2>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">运营指标（无需人工核对）</h2>
           <div class="grid grid-cols-2 gap-2 text-xs text-gray-700 md:grid-cols-4">
             <div class="rounded bg-gray-50 px-2 py-2">规则填充率：{{ pct(operationalMetrics?.field_fill_rate?.rule) }}</div>
-            <div class="rounded bg-gray-50 px-2 py-2">LLM填充率：{{ pct(operationalMetrics?.field_fill_rate?.llm) }}</div>
+            <div class="rounded bg-gray-50 px-2 py-2">智能填充率：{{ pct(operationalMetrics?.field_fill_rate?.llm) }}</div>
             <div class="rounded bg-gray-50 px-2 py-2">推荐填充率：{{ pct(operationalMetrics?.field_fill_rate?.recommended) }}</div>
             <div class="rounded bg-gray-50 px-2 py-2">冲突率：{{ pct(operationalMetrics?.conflict_rate) }}</div>
           </div>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">真值评测</h2>
-          <p v-if="!truthMetrics" class="text-xs text-amber-600">暂无真值评测结果，请先录入真值。</p>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">人工核对结果</h2>
+          <p v-if="!truthMetrics" class="text-xs text-amber-600">暂无人工核对结果，请先在“人工核对”页签完成核对信息。</p>
           <div v-else class="space-y-3">
             <div class="grid grid-cols-2 gap-2 text-xs text-gray-700 md:grid-cols-4">
-              <div class="rounded bg-gray-50 px-2 py-2">分组 Precision：{{ pct(truthMetrics.grouping?.pairwise_precision) }}</div>
-              <div class="rounded bg-gray-50 px-2 py-2">分组 Recall：{{ pct(truthMetrics.grouping?.pairwise_recall) }}</div>
-              <div class="rounded bg-gray-50 px-2 py-2">分组 F1：{{ pct(truthMetrics.grouping?.pairwise_f1) }}</div>
+              <div class="rounded bg-gray-50 px-2 py-2">分组准确率：{{ pct(truthMetrics.grouping?.pairwise_precision) }}</div>
+              <div class="rounded bg-gray-50 px-2 py-2">分组召回率：{{ pct(truthMetrics.grouping?.pairwise_recall) }}</div>
+              <div class="rounded bg-gray-50 px-2 py-2">分组综合分：{{ pct(truthMetrics.grouping?.pairwise_f1) }}</div>
               <div class="rounded bg-gray-50 px-2 py-2">任务分配准确率：{{ pct(truthMetrics.grouping?.task_assignment_accuracy) }}</div>
             </div>
 
@@ -272,7 +284,7 @@
       <div v-else class="space-y-4">
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
           <h2 class="mb-2 text-sm font-semibold text-gray-800">批次知识问答</h2>
-          <p class="mb-3 text-xs text-gray-500">准确优先：先检索证据，再由 MiniMax 回答并做证据一致性校验。</p>
+          <p class="mb-3 text-xs text-gray-500">准确优先：先检索证据，再进行智能回答并做证据一致性校验。</p>
           <div class="mb-3 grid grid-cols-2 gap-2 text-xs text-gray-700 md:grid-cols-4">
             <div class="rounded bg-gray-50 px-2 py-2">帮助率：{{ pct(qaMetrics?.helpful_rate) }}</div>
             <div class="rounded bg-gray-50 px-2 py-2">低证据拒答率：{{ pct(qaMetrics?.insufficient_rate) }}</div>
@@ -308,9 +320,15 @@
         <div v-for="item in qaHistory" :key="item.qa_id || (item.generated_at + item.question)" class="rounded-xl border border-gray-200 bg-white px-4 py-3">
           <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
             <p class="text-xs font-medium text-gray-800">Q：{{ item.question }}</p>
-            <p class="text-[11px] text-gray-500">模型：{{ item.provider }}/{{ item.model }} · {{ formatTime(item.generated_at) }}</p>
+            <p class="text-[11px] text-gray-500">来源：{{ qaAnswerSourceText(item.provider) }} · {{ formatTime(item.generated_at) }}</p>
           </div>
           <div class="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+            <span
+              class="rounded px-2 py-1"
+              :class="isRetrievalAnswer(item) ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'"
+            >
+              {{ qaAnswerSourceText(item.provider) }}
+            </span>
             <span class="rounded bg-blue-50 px-2 py-1 text-blue-700">支持度：{{ qaSupportText(item.support_level) }}</span>
             <span class="rounded bg-gray-100 px-2 py-1 text-gray-600">置信度：{{ Number(item.confidence || 0).toFixed(3) }}</span>
             <span v-if="item.citations?.length" class="rounded bg-emerald-50 px-2 py-1 text-emerald-700">
@@ -318,6 +336,12 @@
             </span>
           </div>
           <p class="rounded bg-gray-50 px-3 py-2 text-sm leading-6 text-gray-700">{{ item.answer }}</p>
+          <p
+            class="mt-2 text-xs"
+            :class="isRetrievalAnswer(item) ? 'text-amber-700' : 'text-emerald-700'"
+          >
+            {{ isRetrievalAnswer(item) ? '当前回答依据证据检索结果给出，证据不足时会保持保守表述。' : '当前回答已结合智能服务生成，并经过证据一致性校验。' }}
+          </p>
 
           <div class="mt-3">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -406,7 +430,7 @@
                       class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-200"
                       @click="openTask(evidence.task_id)"
                     >
-                      查看任务
+                      查看材料
                     </button>
                   </div>
                 </div>
@@ -427,6 +451,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   aiMergeExtractBatch,
   askBatchQuestion,
+  getTask,
   getBatchQaHistory,
   getBatchQaMetrics,
   getBatchEvaluationMetrics,
@@ -435,6 +460,13 @@ import {
   putBatchEvaluationTruth,
   submitBatchQaFeedback,
 } from '../api/ocr.js'
+import {
+  getAiAnswerSource,
+  getAiAnswerSourceLabel,
+  normalizeAiErrorMessage,
+  rememberAiRuntimeState,
+  rememberLatestBatchId,
+} from '../composables/useAiCapabilityState.js'
 
 const ARCHIVE_FIELDS = ['档号', '文号', '责任者', '题名', '日期', '页数', '密级', '备注']
 
@@ -448,6 +480,10 @@ const refreshing = ref(false)
 const savingTruth = ref(false)
 const error = ref('')
 const truthSaveMessage = ref('')
+const truthWarning = ref('')
+const metricsWarning = ref('')
+const verifyingTaskId = ref(null)
+const autoRefreshedMissingTask = ref(false)
 
 const mergeResult = ref(null)
 const metrics = ref(null)
@@ -491,6 +527,25 @@ function qaSupportText(level) {
   if (level === 'supported') return '证据充分'
   if (level === 'partial') return '部分支持'
   return '证据不足'
+}
+
+function qaAnswerSourceText(provider) {
+  return getAiAnswerSourceLabel(provider)
+}
+
+function isRetrievalAnswer(item) {
+  return getAiAnswerSource(item?.provider) === 'retrieval'
+}
+
+function syncAiRuntime({ available, provider = '', error = null }) {
+  if (!batchId.value) return
+  rememberLatestBatchId(batchId.value)
+  rememberAiRuntimeState({
+    latestBatchId: batchId.value,
+    ...(typeof available === 'boolean' ? { aiServiceAvailable: available } : {}),
+    answerSource: provider ? getAiAnswerSource(provider) : undefined,
+    lastError: error ? normalizeAiErrorMessage(error) : '',
+  })
 }
 
 function isEditingNotHelpful(qaId) {
@@ -571,9 +626,18 @@ async function loadQaHistory() {
   qaHistoryLoading.value = true
   try {
     const { data } = await getBatchQaHistory(batchId.value, { page: 1, pageSize: 20 })
+    if (typeof data === 'string' && /<!doctype html|<html/i.test(data)) {
+      throw { response: { data } }
+    }
+    if (!Array.isArray(data?.items)) {
+      throw new Error('Invalid QA history payload.')
+    }
     qaHistory.value = data.items || []
+    if (qaHistory.value.length) {
+      syncAiRuntime({ available: true, provider: qaHistory.value[0].provider })
+    }
   } catch (requestError) {
-    qaError.value = requestError.response?.data?.detail || '问答历史加载失败。'
+    qaError.value = normalizeAiErrorMessage(requestError, '问答历史暂时不可用，请稍后重试。')
   } finally {
     qaHistoryLoading.value = false
   }
@@ -583,9 +647,15 @@ async function loadQaMetrics() {
   if (!batchId.value) return
   try {
     const { data } = await getBatchQaMetrics(batchId.value)
+    if (typeof data === 'string' && /<!doctype html|<html/i.test(data)) {
+      throw { response: { data } }
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Invalid QA metrics payload.')
+    }
     qaMetrics.value = data
   } catch (requestError) {
-    qaError.value = requestError.response?.data?.detail || '问答统计加载失败。'
+    qaError.value = normalizeAiErrorMessage(requestError, '问答统计暂时不可用，请稍后重试。')
   }
 }
 
@@ -609,7 +679,7 @@ async function submitHelpfulFeedback(item) {
     )
     await loadQaMetrics()
   } catch (requestError) {
-    qaError.value = requestError.response?.data?.detail || '反馈提交失败。'
+    qaError.value = normalizeAiErrorMessage(requestError, '反馈提交未完成，请稍后重试。')
   } finally {
     qaFeedbackSubmittingId.value = null
   }
@@ -639,7 +709,7 @@ async function submitNotHelpfulFeedback(item) {
     await loadQaMetrics()
     resetNotHelpfulFeedbackEditor()
   } catch (requestError) {
-    qaError.value = requestError.response?.data?.detail || '反馈提交失败。'
+    qaError.value = normalizeAiErrorMessage(requestError, '反馈提交未完成，请稍后重试。')
   } finally {
     qaFeedbackSubmittingId.value = null
   }
@@ -656,6 +726,8 @@ async function loadAll(forceRefresh = false) {
   else loading.value = true
   error.value = ''
   truthSaveMessage.value = ''
+  truthWarning.value = ''
+  metricsWarning.value = ''
   aiReportError.value = ''
   qaError.value = ''
   if (!forceRefresh) {
@@ -665,29 +737,77 @@ async function loadAll(forceRefresh = false) {
   if (forceRefresh) aiReport.value = null
 
   try {
-    const [mergeRes, metricsRes, truthRes] = await Promise.all([
-      aiMergeExtractBatch(batchId.value, {
-        include_evidence: false,
-        persist: false,
-        force_refresh: forceRefresh,
-      }),
-      getBatchEvaluationMetrics(batchId.value, { forceRefresh }),
-      getBatchEvaluationTruth(batchId.value),
-    ])
+    const mergeRes = await aiMergeExtractBatch(batchId.value, {
+      include_evidence: false,
+      persist: false,
+      force_refresh: forceRefresh,
+    })
+    if (typeof mergeRes.data === 'string' && /<!doctype html|<html/i.test(mergeRes.data)) {
+      throw { response: { data: mergeRes.data } }
+    }
+    if (!mergeRes.data?.batch_id) {
+      throw new Error('Invalid batch insights payload.')
+    }
     mergeResult.value = mergeRes.data
-    metrics.value = metricsRes.data
-    applyTruthData(truthRes.data)
-    await Promise.all([loadQaHistory(), loadQaMetrics()])
+    syncAiRuntime({ available: true })
   } catch (requestError) {
-    error.value = requestError.response?.data?.detail || '批次评测数据加载失败。'
+    error.value = normalizeAiErrorMessage(requestError, '批次智能辅助暂时不可用，请稍后重试。')
+    syncAiRuntime({ available: false, error: requestError })
+    loading.value = false
+    refreshing.value = false
+    return
+  }
+
+  try {
+    const metricsRes = await getBatchEvaluationMetrics(batchId.value, { forceRefresh })
+    if (typeof metricsRes.data === 'string' && /<!doctype html|<html/i.test(metricsRes.data)) {
+      throw { response: { data: metricsRes.data } }
+    }
+    if (!metricsRes.data?.batch_id) {
+      throw new Error('Invalid batch metrics payload.')
+    }
+    metrics.value = metricsRes.data
+  } catch (requestError) {
+    metrics.value = null
+    metricsWarning.value = normalizeAiErrorMessage(requestError, '质量结果暂时不可用，可稍后重试。')
+  }
+
+  try {
+    const truthRes = await getBatchEvaluationTruth(batchId.value)
+    applyTruthData(truthRes.data)
+  } catch (requestError) {
+    applyTruthData({ tasks: [], documents: [], truth_updated_at: null })
+    truthWarning.value = normalizeAiErrorMessage(requestError, '人工核对数据暂时不可用，可稍后重试。')
+  }
+
+  try {
+    await Promise.all([loadQaHistory(), loadQaMetrics()])
   } finally {
     loading.value = false
     refreshing.value = false
   }
 }
 
-function openTask(taskId) {
-  router.push(`/result/${taskId}`)
+async function openTask(taskId) {
+  const normalizedTaskId = Number(taskId)
+  if (!Number.isFinite(normalizedTaskId)) return
+  verifyingTaskId.value = normalizedTaskId
+  try {
+    await getTask(normalizedTaskId)
+    router.push(`/result/${normalizedTaskId}`)
+  } catch (requestError) {
+    if (Number(requestError?.response?.status || 0) === 404) {
+      truthSaveMessage.value = '该材料记录已清理，正在刷新当前批次结果。'
+      if (!refreshing.value && !autoRefreshedMissingTask.value) {
+        autoRefreshedMissingTask.value = true
+        await loadAll(true)
+      }
+      return
+    }
+    error.value = normalizeAiErrorMessage(requestError, '当前材料暂时无法打开，请稍后重试。')
+  } finally {
+    verifyingTaskId.value = null
+  }
 }
 
 function addEmptyDocTruth() {
@@ -707,8 +827,10 @@ async function loadAiReport(forceRefresh = false) {
   try {
     const { data } = await getBatchEvaluationReport(batchId.value, { forceRefresh })
     aiReport.value = data
+    syncAiRuntime({ available: true })
   } catch (requestError) {
-    aiReportError.value = requestError.response?.data?.detail || 'AI 诊断报告生成失败。'
+    aiReportError.value = normalizeAiErrorMessage(requestError, '智能诊断报告暂时不可用，请稍后重试。')
+    syncAiRuntime({ available: false, error: requestError })
   } finally {
     loadingAiReport.value = false
   }
@@ -743,9 +865,10 @@ async function saveTruth() {
     applyTruthData(data)
     const metricsRes = await getBatchEvaluationMetrics(batchId.value, { forceRefresh: false })
     metrics.value = metricsRes.data
-    truthSaveMessage.value = '真值已保存，评测指标已刷新。'
+    syncAiRuntime({ available: true })
+    truthSaveMessage.value = '人工核对已保存，质量结果已刷新。'
   } catch (requestError) {
-    error.value = requestError.response?.data?.detail || '保存真值失败。'
+    error.value = normalizeAiErrorMessage(requestError, '人工核对保存未完成，请稍后重试。')
   } finally {
     savingTruth.value = false
   }
@@ -764,16 +887,22 @@ async function submitQa() {
   try {
     const { data } = await askBatchQuestion(batchId.value, { question, top_k: 8, persist: true })
     qaHistory.value = [data, ...qaHistory.value.filter((item) => Number(item.qa_id) !== Number(data.qa_id))]
+    syncAiRuntime({
+      available: data?.provider !== 'retrieval' ? true : undefined,
+      provider: data?.provider,
+    })
     qaInput.value = ''
     await loadQaMetrics()
   } catch (requestError) {
-    qaError.value = requestError.response?.data?.detail || '问答请求失败，请稍后重试。'
+    qaError.value = normalizeAiErrorMessage(requestError, '问答请求失败，请稍后重试。')
+    syncAiRuntime({ available: false, error: requestError })
   } finally {
     qaSubmitting.value = false
   }
 }
 
 async function reloadWithRecompute() {
+  autoRefreshedMissingTask.value = false
   const hadReport = Boolean(aiReport.value)
   await loadAll(true)
   if (hadReport) {

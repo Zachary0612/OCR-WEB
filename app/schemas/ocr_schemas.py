@@ -52,6 +52,25 @@ class OCRTaskList(BaseModel):
     tasks: list[OCRTaskOut]
 
 
+class TaskProgressRequest(BaseModel):
+    task_ids: list[int] = Field(default_factory=list)
+
+
+class TaskProgressItem(BaseModel):
+    id: int
+    status: str
+    error_message: str | None = None
+
+
+class TaskProgressResponse(BaseModel):
+    total: int
+    done_count: int
+    failed_count: int
+    processing_count: int
+    pending_count: int
+    tasks: list[TaskProgressItem]
+
+
 class AIExtractFieldsRequest(BaseModel):
     persist: bool = False
     include_evidence: bool = True

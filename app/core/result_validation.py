@@ -42,6 +42,10 @@ def _clean_text(value: Any) -> str:
     return text.replace("\x00", "").strip()
 
 
+def _compact_for_compare(value: Any) -> str:
+    return "".join(_clean_text(value).split())
+
+
 def normalize_table_data(raw_table: Any) -> list[list[str]]:
     if raw_table is None:
         return [[""]]
@@ -73,6 +77,14 @@ def table_data_to_text(table_data: list[list[str]]) -> str:
     return "\n".join(lines)
 
 
+def _table_data_matches_html(table_data: list[list[str]], html: str) -> bool:
+    try:
+        html_rows = table_html_to_data(html)
+    except Exception:
+        return False
+    return normalize_table_data(table_data) == normalize_table_data(html_rows)
+
+
 def _normalize_bbox(raw_bbox: Any) -> tuple[Any, str]:
     if not raw_bbox:
         return [], "rect"
@@ -99,6 +111,14 @@ def _normalize_region(region: Any) -> dict[str, Any]:
     layout_bbox, _ = _normalize_bbox(region.get("layout_bbox", region.get("bbox", [])))
     region_type = _clean_text(region.get("type", "text")) or "text"
     content = _clean_text(region.get("content", ""))
+    region_lines = _normalize_region_lines(region.get("region_lines"))
+
+    # When manual edits update `content` but stale OCR line fragments remain,
+    # prefer the edited content and drop mismatched line fragments.
+    if region_type != "table" and content and region_lines:
+        lines_text = "\n".join(_clean_text(line.get("text", "")) for line in region_lines if _clean_text(line.get("text", "")))
+        if _compact_for_compare(lines_text) and _compact_for_compare(lines_text) != _compact_for_compare(content):
+            region_lines = []
 
     normalized: dict[str, Any] = {
         "type": region_type,
@@ -108,15 +128,27 @@ def _normalize_region(region: Any) -> dict[str, Any]:
         "content": content,
     }
 
+    if region_lines:
+        normalized["region_lines"] = region_lines
+
     if region_type == "table":
         raw_table = region.get("table_data")
-        if raw_table is None and region.get("html"):
-            raw_table = table_html_to_data(str(region["html"]))
+        html = str(region.get("html") or "").strip()
+        if raw_table is None and html:
+            raw_table = table_html_to_data(html)
         table_data = normalize_table_data(raw_table)
         normalized["table_data"] = table_data
         normalized["content"] = table_data_to_text(table_data)
+        if html and _table_data_matches_html(table_data, html):
+            normalized["html"] = html
 
     return normalized
+
+
+def _normalize_region_lines(raw_lines: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_lines, list):
+        return []
+    return [_normalize_line(line, index) for index, line in enumerate(raw_lines) if isinstance(line, dict)]
 
 
 def _normalize_line(line: Any, index: int) -> dict[str, Any]:

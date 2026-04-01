@@ -44,6 +44,9 @@ from app.schemas.ocr_schemas import (
     OCRTaskDetail,
     OCRTaskList,
     OCRTaskOut,
+    TaskProgressRequest,
+    TaskProgressResponse,
+    TaskProgressItem,
 )
 from app.services.batch_evaluation_service import (
     get_batch_evaluation_ai_report,
@@ -51,6 +54,7 @@ from app.services.batch_evaluation_service import (
     get_batch_evaluation_truth,
     save_batch_evaluation_truth,
 )
+from app.services.batch_cache_service import invalidate_batch_ai_cache, normalize_batch_ids
 from app.services.batch_qa_service import (
     answer_batch_question,
     get_batch_qa_history,
@@ -135,11 +139,75 @@ def _raise_bad_request(error: Exception) -> None:
     raise error
 
 
+def _raise_service_unavailable(error: Exception, detail: str) -> None:
+    try:
+        _raise_bad_request(error)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception(detail)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail) from error
+
+
+async def _collect_batch_ids_for_task_ids(db: AsyncSession, task_ids: list[int]) -> set[str]:
+    normalized_ids = sorted({int(task_id) for task_id in task_ids if task_id is not None})
+    if not normalized_ids:
+        return set()
+    rows = (
+        await db.execute(
+            select(ArchiveRecord.batch_id)
+            .where(
+                ArchiveRecord.task_id.in_(normalized_ids),
+                ArchiveRecord.batch_id.is_not(None),
+                ArchiveRecord.batch_id != "",
+            )
+            .distinct()
+        )
+    ).scalars().all()
+    return normalize_batch_ids(rows)
+
+
+async def _collect_batch_ids_for_folder(db: AsyncSession, folder: str) -> set[str]:
+    base = folder.rstrip("/\\")
+    if not base:
+        return set()
+
+    task_rows = (
+        await db.execute(
+            select(OCRTask.id).where(
+                or_(
+                    func.starts_with(OCRTask.file_path, base + "\\"),
+                    func.starts_with(OCRTask.file_path, base + "/"),
+                )
+            )
+        )
+    ).scalars().all()
+    return await _collect_batch_ids_for_task_ids(db, [int(task_id) for task_id in task_rows])
+
+
+async def _collect_batch_ids_for_archive_delete(
+    db: AsyncSession,
+    *,
+    folder: str,
+    batch_id: str,
+) -> set[str]:
+    stmt = select(ArchiveRecord.batch_id).where(
+        ArchiveRecord.batch_id.is_not(None),
+        ArchiveRecord.batch_id != "",
+    )
+    if folder:
+        stmt = stmt.where(ArchiveRecord.batch_folder == folder)
+    if batch_id:
+        stmt = stmt.where(ArchiveRecord.batch_id == batch_id)
+    rows = (await db.execute(stmt.distinct())).scalars().all()
+    return normalize_batch_ids(rows)
+
+
 @router.post("/upload", response_model=OCRTaskDetail, status_code=status.HTTP_202_ACCEPTED)
 async def upload_and_enqueue(
     file: UploadFile = File(...),
     relative_path: str = Form(""),
-    mode: str = Query("vl", pattern="^(vl|layout|ocr)$"),
+    mode: str = Query("vl", pattern="^(baidu_vl|vl|layout|ocr)$"),
     excel_path: str = Query(""),
     excel_init: int = Query(0),
     output_dir: str = Query(""),
@@ -158,17 +226,20 @@ async def upload_and_enqueue(
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
-    task = await create_task(db, file.filename, file_path, file_type, mode=mode)
-    await enqueue_task(
-        OCRJob(
-            task_id=task.id,
-            mode=mode,
-            excel_path=excel_path,
-            excel_init=excel_init,
-            output_dir=output_dir,
-            batch_id=batch_id,
+    try:
+        task = await create_task(db, file.filename, file_path, file_type, mode=mode)
+        await enqueue_task(
+            OCRJob(
+                task_id=task.id,
+                mode=mode,
+                excel_path=excel_path,
+                excel_init=excel_init,
+                output_dir=output_dir,
+                batch_id=batch_id,
+            )
         )
-    )
+    except Exception as error:  # noqa: BLE001
+        _raise_service_unavailable(error, "任务提交服务暂不可用，请稍后重试。")
     invalidate_lists()
     return _task_payload(task)
 
@@ -203,7 +274,7 @@ async def scan_folder(path: str = Query(..., description="Absolute path under an
 @router.post("/upload-from-path", response_model=OCRTaskDetail, status_code=status.HTTP_202_ACCEPTED)
 async def upload_from_path(
     body: dict,
-    mode: str = Query("vl", pattern="^(vl|layout|ocr)$"),
+    mode: str = Query("vl", pattern="^(baidu_vl|vl|layout|ocr)$"),
     excel_path: str = Query(""),
     excel_init: int = Query(0),
     output_dir: str = Query(""),
@@ -219,17 +290,20 @@ async def upload_from_path(
     if file_type not in {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf"}:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
 
-    task = await create_task(db, file_path.name, str(file_path), file_type, mode=mode)
-    await enqueue_task(
-        OCRJob(
-            task_id=task.id,
-            mode=mode,
-            excel_path=excel_path,
-            excel_init=excel_init,
-            output_dir=output_dir,
-            batch_id=batch_id,
+    try:
+        task = await create_task(db, file_path.name, str(file_path), file_type, mode=mode)
+        await enqueue_task(
+            OCRJob(
+                task_id=task.id,
+                mode=mode,
+                excel_path=excel_path,
+                excel_init=excel_init,
+                output_dir=output_dir,
+                batch_id=batch_id,
+            )
         )
-    )
+    except Exception as error:  # noqa: BLE001
+        _raise_service_unavailable(error, "路径任务提交服务暂不可用，请稍后重试。")
     invalidate_lists()
     return _task_payload(task)
 
@@ -314,6 +388,11 @@ async def delete_archive_records(
     batch_id: str = Query(""),
     db: AsyncSession = Depends(get_db),
 ):
+    affected_batch_ids = await _collect_batch_ids_for_archive_delete(
+        db,
+        folder=folder,
+        batch_id=batch_id,
+    )
     query = sa_delete(ArchiveRecord)
     if folder:
         query = query.where(ArchiveRecord.batch_folder == folder)
@@ -321,6 +400,8 @@ async def delete_archive_records(
         query = query.where(ArchiveRecord.batch_id == batch_id)
     result = await db.execute(query)
     await db.commit()
+    if result.rowcount:
+        invalidate_batch_ai_cache(affected_batch_ids)
     return {"deleted": result.rowcount}
 
 
@@ -353,13 +434,24 @@ async def search_tasks_api(
 
 @router.get("/tasks/folders")
 async def list_folders(db: AsyncSession = Depends(get_db)):
-    cached = cache_get("folders")
+    cache_key = "folders:terminal"
+    cached = cache_get(cache_key)
     if cached:
         return cached
 
-    rows = (
-        await db.execute(sa_text("SELECT id, file_path, created_at FROM ocr_tasks ORDER BY created_at DESC"))
-    ).fetchall()
+    try:
+        rows = (
+            await db.execute(
+                sa_text(
+                    "SELECT id, file_path, created_at "
+                    "FROM ocr_tasks "
+                    "WHERE status IN ('done', 'failed') "
+                    "ORDER BY created_at DESC"
+                )
+            )
+        ).fetchall()
+    except Exception as error:  # noqa: BLE001
+        _raise_service_unavailable(error, "目录记录服务暂不可用，请稍后重试。")
     folders: dict[str, dict] = {}
     for task_id, file_path, created_at in rows:
         if not file_path:
@@ -377,11 +469,62 @@ async def list_folders(db: AsyncSession = Depends(get_db)):
             folders[folder]["last_time"] = created_at
             folders[folder]["latest_task_id"] = task_id
 
-    from datetime import datetime
+    from datetime import datetime, timezone
 
-    result = sorted(folders.values(), key=lambda item: item["last_time"] or datetime.min, reverse=True)
-    cache_set("folders", result, LIST_TTL)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    result = sorted(folders.values(), key=lambda item: item["last_time"] or _epoch, reverse=True)
+    cache_set(cache_key, result, LIST_TTL)
     return result
+
+
+@router.post("/tasks/progress", response_model=TaskProgressResponse)
+async def get_tasks_progress(body: TaskProgressRequest, db: AsyncSession = Depends(get_db)):
+    requested_ids = [int(task_id) for task_id in body.task_ids if task_id is not None]
+    if not requested_ids:
+        return TaskProgressResponse(
+            total=0,
+            done_count=0,
+            failed_count=0,
+            processing_count=0,
+            pending_count=0,
+            tasks=[],
+        )
+
+    rows = (
+        await db.execute(select(OCRTask).where(OCRTask.id.in_(requested_ids)))
+    ).scalars().all()
+    task_map = {task.id: task for task in rows}
+
+    items: list[TaskProgressItem] = []
+    counts = {
+        "done": 0,
+        "failed": 0,
+        "processing": 0,
+        "pending": 0,
+    }
+
+    for task_id in requested_ids:
+        task = task_map.get(task_id)
+        if task is None:
+            status_value = "failed"
+            error_message = "Task not found."
+        else:
+            status_value = task.status or "pending"
+            error_message = task.error_message
+
+        if status_value not in counts:
+            status_value = "processing"
+        counts[status_value] += 1
+        items.append(TaskProgressItem(id=task_id, status=status_value, error_message=error_message))
+
+    return TaskProgressResponse(
+        total=len(requested_ids),
+        done_count=counts["done"],
+        failed_count=counts["failed"],
+        processing_count=counts["processing"],
+        pending_count=counts["pending"],
+        tasks=items,
+    )
 
 
 @router.delete("/tasks/by-folder")
@@ -389,9 +532,12 @@ async def delete_tasks_for_folder(
     folder: str = Query(...),
     db: AsyncSession = Depends(get_db),
 ):
+    affected_batch_ids = await _collect_batch_ids_for_folder(db, folder)
     deleted = await delete_tasks_by_folder(db, folder)
     cache_delete_pattern("task:*")
     invalidate_lists()
+    if deleted:
+        invalidate_batch_ai_cache(affected_batch_ids)
     return {"deleted": deleted, "folder": folder}
 
 
@@ -528,7 +674,7 @@ async def ai_merge_extract_batch(
             force_refresh=body.force_refresh,
         )
     except Exception as error:  # noqa: BLE001
-        _raise_bad_request(error)
+        _raise_service_unavailable(error, "智能整合服务暂不可用，请稍后重试。")
 
     if not result:
         raise HTTPException(
@@ -544,7 +690,10 @@ async def get_batch_truth(
     batch_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    payload = await get_batch_evaluation_truth(db, batch_id=batch_id)
+    try:
+        payload = await get_batch_evaluation_truth(db, batch_id=batch_id)
+    except Exception as error:  # noqa: BLE001
+        _raise_service_unavailable(error, "批次真值数据暂不可用，请稍后重试。")
     return payload
 
 
@@ -563,6 +712,8 @@ async def put_batch_truth(
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001
+        _raise_service_unavailable(error, "批次真值保存暂不可用，请稍后重试。")
     return payload
 
 
@@ -579,7 +730,7 @@ async def get_batch_metrics(
             force_refresh=force_refresh,
         )
     except Exception as error:  # noqa: BLE001
-        _raise_bad_request(error)
+        _raise_service_unavailable(error, "批次质量概览暂不可用，请稍后重试。")
 
     if not payload:
         raise HTTPException(status_code=404, detail="No eligible completed tasks were found for this batch.")
@@ -599,7 +750,7 @@ async def get_batch_ai_report(
             force_refresh=force_refresh,
         )
     except Exception as error:  # noqa: BLE001
-        _raise_bad_request(error)
+        _raise_service_unavailable(error, "批次评测报告暂不可用，请稍后重试。")
 
     if not payload:
         raise HTTPException(status_code=404, detail="No eligible completed tasks were found for this batch.")
@@ -697,10 +848,12 @@ async def batch_qa_metrics(
 
 @router.delete("/tasks/{task_id}")
 async def remove_task(task_id: int, db: AsyncSession = Depends(get_db)):
+    affected_batch_ids = await _collect_batch_ids_for_task_ids(db, [task_id])
     deleted = await delete_task(db, task_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Task not found.")
     invalidate_task(task_id)
+    invalidate_batch_ai_cache(affected_batch_ids)
     return {"message": "Deleted"}
 
 

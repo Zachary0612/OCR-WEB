@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from typing import Any
@@ -201,23 +202,29 @@ def _extract_message_text(response_json: dict[str, Any]) -> str:
 
 def _parse_json_object(text: str) -> dict[str, Any]:
     clean = _coerce_string(text)
+    clean = re.sub(r"^\s*<think>.*?</think>\s*", "", clean, flags=re.DOTALL)
     if clean.startswith("```"):
         clean = re.sub(r"^```(?:json)?\s*", "", clean)
         clean = re.sub(r"\s*```$", "", clean)
     try:
         return json.loads(clean)
     except json.JSONDecodeError:
-        start = clean.find("{")
-        end = clean.rfind("}")
-        if start != -1 and end != -1 and start < end:
+        decoder = json.JSONDecoder()
+        for start in (index for index, char in enumerate(clean) if char == "{"):
             try:
-                return json.loads(clean[start : end + 1])
-            except json.JSONDecodeError as exc:
-                raise MiniMaxServiceError(502, "MiniMax returned invalid JSON.") from exc
+                payload, _end = decoder.raw_decode(clean[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                return payload
         raise MiniMaxServiceError(502, "MiniMax returned invalid JSON.")
 
 
-async def _post_minimax_chat_completions(payload: dict[str, Any]) -> dict[str, Any]:
+async def _post_minimax_chat_completions(
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
     if not MINIMAX_ENABLED:
         raise MiniMaxServiceError(503, "MiniMax field extraction is disabled.")
     if not MINIMAX_API_KEY.strip():
@@ -225,28 +232,57 @@ async def _post_minimax_chat_completions(payload: dict[str, Any]) -> dict[str, A
     if httpx is None:
         raise MiniMaxServiceError(503, "httpx is required for MiniMax integration.")
 
-    try:
-        async with httpx.AsyncClient(timeout=MINIMAX_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                f"{MINIMAX_BASE_URL.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {MINIMAX_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-    except httpx.TimeoutException as exc:
-        raise MiniMaxServiceError(504, "MiniMax request timed out.") from exc
-    except httpx.HTTPError as exc:
-        raise MiniMaxServiceError(502, f"MiniMax request failed: {exc}") from exc
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_seconds or MINIMAX_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    f"{MINIMAX_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {MINIMAX_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            raise MiniMaxServiceError(504, "MiniMax request timed out.") from exc
+        except httpx.HTTPError as exc:
+            raise MiniMaxServiceError(502, f"MiniMax request failed: {exc}") from exc
+
+        if response.status_code >= 500 and attempt < attempts - 1:
+            await asyncio.sleep(0.5 * (attempt + 1))
+            continue
+        break
 
     if response.status_code >= 400:
-        raise MiniMaxServiceError(502, f"MiniMax returned HTTP {response.status_code}.")
+        response_text = _coerce_string(response.text)
+        response_text = re.sub(r"\s+", " ", response_text)[:200]
+        if response.status_code in {401, 403}:
+            detail = f"MiniMax returned HTTP {response.status_code}. 智能服务暂未连通，请检查本地模型配置。"
+        elif response.status_code == 404:
+            detail = f"MiniMax returned HTTP {response.status_code}. 上游接口地址或模型名称可能未生效，请检查本地模型配置。"
+        else:
+            detail = f"MiniMax returned HTTP {response.status_code}. 上游智能服务返回异常。"
+
+        if response_text:
+            detail = f"{detail} Upstream: {response_text}"
+
+        raise MiniMaxServiceError(502, detail)
 
     try:
         return response.json()
     except ValueError as exc:
         raise MiniMaxServiceError(502, "MiniMax returned a non-JSON response.") from exc
+
+
+def _resolve_field_extraction_timeout(*, page_count: int, excerpt_text: str) -> float:
+    timeout = MINIMAX_TIMEOUT_SECONDS
+    excerpt_length = len(_coerce_string(excerpt_text))
+    if page_count >= 6 or excerpt_length >= 4000:
+        return max(timeout, 180.0)
+    if page_count >= 3 or excerpt_length >= 2000:
+        return max(timeout, 120.0)
+    return timeout
 
 
 def normalize_llm_output(payload: dict[str, Any]) -> dict[str, Any]:
@@ -364,7 +400,13 @@ async def call_minimax_field_extraction(
         ],
     }
 
-    response_json = await _post_minimax_chat_completions(payload)
+    response_json = await _post_minimax_chat_completions(
+        payload,
+        timeout_seconds=_resolve_field_extraction_timeout(
+            page_count=page_count,
+            excerpt_text=excerpt_text,
+        ),
+    )
     content = _extract_message_text(response_json)
     llm_fields = normalize_llm_output(_parse_json_object(content))
     return {

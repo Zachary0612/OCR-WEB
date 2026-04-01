@@ -1,56 +1,55 @@
-# NVIDIA H20 GPU 服务器部署手册
-
-> **适用场景**：在搭载 NVIDIA H20 GPU 的 Linux 服务器上从零部署 OCR 档案识别系统  
-> **预计耗时**：2-3 小时（含模型首次下载）  
-> **最后更新**：2026-03-30
-
----
-
-## 目录
-
-1. [系统要求](#1-系统要求)
-2. [服务器环境准备](#2-服务器环境准备)
-3. [NVIDIA 驱动与 CUDA 安装](#3-nvidia-驱动与-cuda-安装)
-4. [cuDNN 安装](#4-cudnn-安装)
-5. [PostgreSQL 数据库安装](#5-postgresql-数据库安装)
-6. [Redis 缓存安装](#6-redis-缓存安装)
-7. [Python 环境配置](#7-python-环境配置)
-8. [项目代码部署](#8-项目代码部署)
-9. [后端服务配置](#9-后端服务配置)
-10. [前端构建与部署](#10-前端构建与部署)
-11. [Nginx 反向代理配置](#11-nginx-反向代理配置)
-12. [SSL 证书配置（可选）](#12-ssl-证书配置可选)
-13. [初始数据导入](#13-初始数据导入)
-14. [服务验证](#14-服务验证)
-15. [systemd 服务管理](#15-systemd-服务管理)
-16. [日志管理](#16-日志管理)
-17. [备份与恢复](#17-备份与恢复)
-18. [性能优化](#18-性能优化)
-19. [常见问题排查](#19-常见问题排查)
-20. [运维命令速查](#20-运维命令速查)
+﻿# NVIDIA H20 GPU 鏈嶅姟鍣ㄩ儴缃叉墜鍐?
+> **閫傜敤鍦烘櫙**锛氬湪鎼浇 NVIDIA H20 GPU 鐨?Linux 鏈嶅姟鍣ㄤ笂浠庨浂閮ㄧ讲 OCR 妗ｆ璇嗗埆绯荤粺  
+> **棰勮鑰楁椂**锛?-3 灏忔椂锛堝惈妯″瀷棣栨涓嬭浇锛? 
+> **鏈€鍚庢洿鏂?*锛?026-03-30
 
 ---
 
-## 1. 系统要求
+## 鐩綍
 
-### 1.1 硬件要求
+1. [绯荤粺瑕佹眰](#1-绯荤粺瑕佹眰)
+2. [鏈嶅姟鍣ㄧ幆澧冨噯澶嘳(#2-鏈嶅姟鍣ㄧ幆澧冨噯澶?
+3. [NVIDIA 椹卞姩涓?CUDA 瀹夎](#3-nvidia-椹卞姩涓?cuda-瀹夎)
+4. [cuDNN 瀹夎](#4-cudnn-瀹夎)
+5. [PostgreSQL 鏁版嵁搴撳畨瑁匽(#5-postgresql-鏁版嵁搴撳畨瑁?
+6. [Redis 缂撳瓨瀹夎](#6-redis-缂撳瓨瀹夎)
+7. [Python 鐜閰嶇疆](#7-python-鐜閰嶇疆)
+8. [椤圭洰浠ｇ爜閮ㄧ讲](#8-椤圭洰浠ｇ爜閮ㄧ讲)
+9. [鍚庣鏈嶅姟閰嶇疆](#9-鍚庣鏈嶅姟閰嶇疆)
+10. [鍓嶇鏋勫缓涓庨儴缃瞉(#10-鍓嶇鏋勫缓涓庨儴缃?
+11. [Nginx 鍙嶅悜浠ｇ悊閰嶇疆](#11-nginx-鍙嶅悜浠ｇ悊閰嶇疆)
+12. [SSL 璇佷功閰嶇疆锛堝彲閫夛級](#12-ssl-璇佷功閰嶇疆鍙€?
+13. [鍒濆鏁版嵁瀵煎叆](#13-鍒濆鏁版嵁瀵煎叆)
+14. [鏈嶅姟楠岃瘉](#14-鏈嶅姟楠岃瘉)
+15. [systemd 鏈嶅姟绠＄悊](#15-systemd-鏈嶅姟绠＄悊)
+16. [鏃ュ織绠＄悊](#16-鏃ュ織绠＄悊)
+17. [澶囦唤涓庢仮澶峕(#17-澶囦唤涓庢仮澶?
+18. [鎬ц兘浼樺寲](#18-鎬ц兘浼樺寲)
+19. [甯歌闂鎺掓煡](#19-甯歌闂鎺掓煡)
+20. [杩愮淮鍛戒护閫熸煡](#20-杩愮淮鍛戒护閫熸煡)
 
-| 组件 | 最低配置 | 推荐配置 |
+---
+
+## 1. 绯荤粺瑕佹眰
+
+### 1.1 纭欢瑕佹眰
+
+| 缁勪欢 | 鏈€浣庨厤缃?| 鎺ㄨ崘閰嶇疆 |
 |------|----------|----------|
-| **GPU** | NVIDIA H20 × 1 | NVIDIA H20 × 1 |
-| **CPU** | 8 核 | 16 核及以上 |
-| **内存** | 32 GB | 64 GB 及以上 |
-| **系统盘** | 100 GB SSD | 200 GB NVMe SSD |
-| **数据盘** | 500 GB | 1 TB 及以上 |
-| **网络** | 100 Mbps | 1 Gbps |
+| **GPU** | NVIDIA H20 脳 1 | NVIDIA H20 脳 1 |
+| **CPU** | 8 鏍?| 16 鏍稿強浠ヤ笂 |
+| **鍐呭瓨** | 32 GB | 64 GB 鍙婁互涓?|
+| **绯荤粺鐩?* | 100 GB SSD | 200 GB NVMe SSD |
+| **鏁版嵁鐩?* | 500 GB | 1 TB 鍙婁互涓?|
+| **缃戠粶** | 100 Mbps | 1 Gbps |
 
-### 1.2 软件要求
+### 1.2 杞欢瑕佹眰
 
-| 软件 | 版本要求 |
+| 杞欢 | 鐗堟湰瑕佹眰 |
 |------|----------|
-| **操作系统** | Ubuntu 22.04 LTS (推荐) / Ubuntu 20.04 LTS |
-| **NVIDIA 驱动** | ≥ 535.x |
-| **CUDA** | 12.x (推荐 12.2 或 12.4) |
+| **鎿嶄綔绯荤粺** | Ubuntu 22.04 LTS (鎺ㄨ崘) / Ubuntu 20.04 LTS |
+| **NVIDIA 椹卞姩** | 鈮?535.x |
+| **CUDA** | 12.x (鎺ㄨ崘 12.2 鎴?12.4) |
 | **cuDNN** | 8.9.x |
 | **Python** | 3.10.x |
 | **PostgreSQL** | 14.x / 15.x |
@@ -58,42 +57,36 @@
 | **Node.js** | 18.x LTS / 20.x LTS |
 | **Nginx** | 1.18+ |
 
-### 1.3 NVIDIA H20 GPU 特性
+### 1.3 NVIDIA H20 GPU 鐗规€?
+NVIDIA H20 鏄笓涓轰腑鍥藉競鍦鸿璁＄殑鏁版嵁涓績 GPU锛?
+- **鏄惧瓨**锛?6 GB HBM3
+- **绠楀姏**锛氶€傚悎澶ц妯?AI 鎺ㄧ悊
+- **CUDA 鏍稿績**锛氬厖瓒崇殑骞惰璁＄畻鑳藉姏
+- **鍔熻€?*锛氱害 400W TDP
 
-NVIDIA H20 是专为中国市场设计的数据中心 GPU：
+> **閲嶈**锛欻20 瀹屽叏鍏煎鏍囧噯 CUDA 宸ュ叿閾撅紝鏈」鐩殑 PaddlePaddle GPU 鐗堟湰鍙洿鎺ヨ繍琛屻€?
+### 1.4 绔彛瑙勫垝
 
-- **显存**：96 GB HBM3
-- **算力**：适合大规模 AI 推理
-- **CUDA 核心**：充足的并行计算能力
-- **功耗**：约 400W TDP
-
-> **重要**：H20 完全兼容标准 CUDA 工具链，本项目的 PaddlePaddle GPU 版本可直接运行。
-
-### 1.4 端口规划
-
-| 服务 | 端口 | 说明 |
+| 鏈嶅姟 | 绔彛 | 璇存槑 |
 |------|------|------|
-| Nginx (HTTP) | 80 | 前端入口 |
-| Nginx (HTTPS) | 443 | HTTPS 入口（可选） |
-| 后端 API | 8000 | FastAPI 服务 |
-| 前端开发 | 3000 | 仅开发时使用 |
-| PostgreSQL | 5432 | 数据库 |
-| Redis | 6379 | 缓存 |
+| Nginx (HTTP) | 80 | 鍓嶇鍏ュ彛 |
+| Nginx (HTTPS) | 443 | HTTPS 鍏ュ彛锛堝彲閫夛級 |
+| 鍚庣 API | 8000 | FastAPI 鏈嶅姟 |
+| 鍓嶇寮€鍙?| 3000 | 浠呭紑鍙戞椂浣跨敤 |
+| PostgreSQL | 5432 | 鏁版嵁搴?|
+| Redis | 6379 | 缂撳瓨 |
 
 ---
 
-## 2. 服务器环境准备
-
-### 2.1 系统更新
+## 2. 鏈嶅姟鍣ㄧ幆澧冨噯澶?
+### 2.1 绯荤粺鏇存柊
 
 ```bash
-# 更新软件包列表
-sudo apt update
+# 鏇存柊杞欢鍖呭垪琛?sudo apt update
 
-# 升级已安装的软件包
-sudo apt upgrade -y
+# 鍗囩骇宸插畨瑁呯殑杞欢鍖?sudo apt upgrade -y
 
-# 安装基础工具
+# 瀹夎鍩虹宸ュ叿
 sudo apt install -y \
     build-essential \
     git \
@@ -110,40 +103,38 @@ sudo apt install -y \
     lsb-release
 ```
 
-### 2.2 创建项目用户（推荐）
+### 2.2 鍒涘缓椤圭洰鐢ㄦ埛锛堟帹鑽愶級
 
 ```bash
-# 创建专用用户
+# 鍒涘缓涓撶敤鐢ㄦ埛
 sudo useradd -m -s /bin/bash ocruser
 
-# 设置密码
+# 璁剧疆瀵嗙爜
 sudo passwd ocruser
 
-# 添加到 sudo 组（可选，用于调试）
-sudo usermod -aG sudo ocruser
+# 娣诲姞鍒?sudo 缁勶紙鍙€夛紝鐢ㄤ簬璋冭瘯锛?sudo usermod -aG sudo ocruser
 
-# 创建项目目录
+# 鍒涘缓椤圭洰鐩綍
 sudo mkdir -p /opt/ocr
 sudo chown ocruser:ocruser /opt/ocr
 ```
 
-### 2.3 配置时区
+### 2.3 閰嶇疆鏃跺尯
 
 ```bash
-# 设置时区为中国时区
-sudo timedatectl set-timezone Asia/Shanghai
+# 璁剧疆鏃跺尯涓轰腑鍥芥椂鍖?sudo timedatectl set-timezone Asia/Shanghai
 
-# 验证
+# 楠岃瘉
 timedatectl
 ```
 
-### 2.4 配置系统限制
+### 2.4 閰嶇疆绯荤粺闄愬埗
 
-编辑 `/etc/security/limits.conf`，添加：
+缂栬緫 `/etc/security/limits.conf`锛屾坊鍔狅細
 
 ```bash
 sudo tee -a /etc/security/limits.conf << 'EOF'
-# OCR 服务优化
+# OCR 鏈嶅姟浼樺寲
 ocruser soft nofile 65535
 ocruser hard nofile 65535
 ocruser soft nproc 65535
@@ -151,96 +142,90 @@ ocruser hard nproc 65535
 EOF
 ```
 
-### 2.5 配置 swap（如果内存不足）
+### 2.5 閰嶇疆 swap锛堝鏋滃唴瀛樹笉瓒筹級
 
 ```bash
-# 检查当前 swap
+# 妫€鏌ュ綋鍓?swap
 free -h
 
-# 如果没有 swap，创建 16GB swap 文件
+# 濡傛灉娌℃湁 swap锛屽垱寤?16GB swap 鏂囦欢
 sudo fallocate -l 16G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
 
-# 永久生效
+# 姘镐箙鐢熸晥
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 ---
 
-## 3. NVIDIA 驱动与 CUDA 安装
+## 3. NVIDIA 椹卞姩涓?CUDA 瀹夎
 
-### 3.1 检查 GPU 状态
-
+### 3.1 妫€鏌?GPU 鐘舵€?
 ```bash
-# 查看 GPU 硬件
+# 鏌ョ湅 GPU 纭欢
 lspci | grep -i nvidia
 
-# 预期输出类似：
-# 3b:00.0 3D controller: NVIDIA Corporation Device 2331 (rev a1)
+# 棰勬湡杈撳嚭绫讳技锛?# 3b:00.0 3D controller: NVIDIA Corporation Device 2331 (rev a1)
 ```
 
-### 3.2 禁用 Nouveau 驱动
+### 3.2 绂佺敤 Nouveau 椹卞姩
 
 ```bash
-# 检查 nouveau 是否加载
+# 妫€鏌?nouveau 鏄惁鍔犺浇
 lsmod | grep nouveau
 
-# 如果有输出，需要禁用
-sudo tee /etc/modprobe.d/blacklist-nouveau.conf << 'EOF'
+# 濡傛灉鏈夎緭鍑猴紝闇€瑕佺鐢?sudo tee /etc/modprobe.d/blacklist-nouveau.conf << 'EOF'
 blacklist nouveau
 options nouveau modeset=0
 EOF
 
-# 更新 initramfs
+# 鏇存柊 initramfs
 sudo update-initramfs -u
 
-# 重启服务器
-sudo reboot
+# 閲嶅惎鏈嶅姟鍣?sudo reboot
 ```
 
-### 3.3 安装 NVIDIA 驱动
+### 3.3 瀹夎 NVIDIA 椹卞姩
 
-**方法一：使用 Ubuntu 官方驱动（推荐）**
+**鏂规硶涓€锛氫娇鐢?Ubuntu 瀹樻柟椹卞姩锛堟帹鑽愶級**
 
 ```bash
-# 查看推荐驱动
+# 鏌ョ湅鎺ㄨ崘椹卞姩
 ubuntu-drivers devices
 
-# 自动安装推荐驱动
+# 鑷姩瀹夎鎺ㄨ崘椹卞姩
 sudo ubuntu-drivers autoinstall
 
-# 或手动指定版本（H20 推荐 535 或更高）
+# 鎴栨墜鍔ㄦ寚瀹氱増鏈紙H20 鎺ㄨ崘 535 鎴栨洿楂橈級
 sudo apt install -y nvidia-driver-535
 ```
 
-**方法二：使用 NVIDIA 官方 .run 文件**
+**鏂规硶浜岋細浣跨敤 NVIDIA 瀹樻柟 .run 鏂囦欢**
 
 ```bash
-# 下载驱动（从 NVIDIA 官网获取最新版本）
+# 涓嬭浇椹卞姩锛堜粠 NVIDIA 瀹樼綉鑾峰彇鏈€鏂扮増鏈級
 wget https://cn.download.nvidia.com/tesla/535.154.05/NVIDIA-Linux-x86_64-535.154.05.run
 
-# 安装依赖
+# 瀹夎渚濊禆
 sudo apt install -y linux-headers-$(uname -r)
 
-# 运行安装
+# 杩愯瀹夎
 sudo chmod +x NVIDIA-Linux-x86_64-535.154.05.run
 sudo ./NVIDIA-Linux-x86_64-535.154.05.run
 ```
 
-### 3.4 验证驱动安装
+### 3.4 楠岃瘉椹卞姩瀹夎
 
 ```bash
-# 重启后验证
-sudo reboot
+# 閲嶅惎鍚庨獙璇?sudo reboot
 
-# 查看 GPU 信息
+# 鏌ョ湅 GPU 淇℃伅
 nvidia-smi
 ```
 
-**预期输出**：
-
+**棰勬湡杈撳嚭**锛?
 ```
 +-----------------------------------------------------------------------------+
 | NVIDIA-SMI 535.154.05   Driver Version: 535.154.05   CUDA Version: 12.2     |
@@ -253,42 +238,39 @@ nvidia-smi
 +-------------------------------+----------------------+----------------------+
 ```
 
-### 3.5 安装 CUDA Toolkit
+### 3.5 瀹夎 CUDA Toolkit
 
 ```bash
-# 添加 NVIDIA CUDA 仓库
+# 娣诲姞 NVIDIA CUDA 浠撳簱
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt update
 
-# 安装 CUDA 12.2（与 H20 驱动兼容）
-sudo apt install -y cuda-toolkit-12-2
+# 瀹夎 CUDA 12.2锛堜笌 H20 椹卞姩鍏煎锛?sudo apt install -y cuda-toolkit-12-2
 
-# 或安装完整 CUDA（包含驱动，如果上面没装驱动）
-# sudo apt install -y cuda-12-2
+# 鎴栧畨瑁呭畬鏁?CUDA锛堝寘鍚┍鍔紝濡傛灉涓婇潰娌¤椹卞姩锛?# sudo apt install -y cuda-12-2
 ```
 
-### 3.6 配置 CUDA 环境变量
+### 3.6 閰嶇疆 CUDA 鐜鍙橀噺
 
 ```bash
-# 添加到 ~/.bashrc
+# 娣诲姞鍒?~/.bashrc
 cat >> ~/.bashrc << 'EOF'
 
-# CUDA 环境变量
+# CUDA 鐜鍙橀噺
 export CUDA_HOME=/usr/local/cuda-12.2
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 EOF
 
-# 立即生效
+# 绔嬪嵆鐢熸晥
 source ~/.bashrc
 
-# 验证
+# 楠岃瘉
 nvcc --version
 ```
 
-**预期输出**：
-
+**棰勬湡杈撳嚭**锛?
 ```
 nvcc: NVIDIA (R) Cuda compiler driver
 Copyright (c) 2005-2023 NVIDIA Corporation
@@ -298,178 +280,161 @@ Cuda compilation tools, release 12.2, V12.2.140
 
 ---
 
-## 4. cuDNN 安装
+## 4. cuDNN 瀹夎
 
-### 4.1 下载 cuDNN
+### 4.1 涓嬭浇 cuDNN
 
-从 [NVIDIA cuDNN 下载页面](https://developer.nvidia.com/cudnn) 下载对应版本（需要 NVIDIA 账号）。
+浠?[NVIDIA cuDNN 涓嬭浇椤甸潰](https://developer.nvidia.com/cudnn) 涓嬭浇瀵瑰簲鐗堟湰锛堥渶瑕?NVIDIA 璐﹀彿锛夈€?
+閫夋嫨锛?*cuDNN v8.9.x for CUDA 12.x** 鈫?**Local Installer for Linux x86_64 (Tar)**
 
-选择：**cuDNN v8.9.x for CUDA 12.x** → **Local Installer for Linux x86_64 (Tar)**
-
-### 4.2 安装 cuDNN
+### 4.2 瀹夎 cuDNN
 
 ```bash
-# 解压（假设下载到 ~/Downloads）
-cd ~/Downloads
+# 瑙ｅ帇锛堝亣璁句笅杞藉埌 ~/Downloads锛?cd ~/Downloads
 tar -xvf cudnn-linux-x86_64-8.9.7.29_cuda12-archive.tar.xz
 
-# 复制文件到 CUDA 目录
+# 澶嶅埗鏂囦欢鍒?CUDA 鐩綍
 sudo cp cudnn-linux-x86_64-8.9.7.29_cuda12-archive/include/cudnn*.h /usr/local/cuda-12.2/include/
 sudo cp cudnn-linux-x86_64-8.9.7.29_cuda12-archive/lib/libcudnn* /usr/local/cuda-12.2/lib64/
 
-# 设置权限
+# 璁剧疆鏉冮檺
 sudo chmod a+r /usr/local/cuda-12.2/include/cudnn*.h
 sudo chmod a+r /usr/local/cuda-12.2/lib64/libcudnn*
 
-# 更新链接器缓存
-sudo ldconfig
+# 鏇存柊閾炬帴鍣ㄧ紦瀛?sudo ldconfig
 ```
 
-### 4.3 验证 cuDNN
+### 4.3 楠岃瘉 cuDNN
 
 ```bash
-# 检查 cuDNN 版本
+# 妫€鏌?cuDNN 鐗堟湰
 cat /usr/local/cuda-12.2/include/cudnn_version.h | grep CUDNN_MAJOR -A 2
 ```
 
 ---
 
-## 5. PostgreSQL 数据库安装
-
-### 5.1 安装 PostgreSQL 15
+## 5. PostgreSQL 鏁版嵁搴撳畨瑁?
+### 5.1 瀹夎 PostgreSQL 15
 
 ```bash
-# 添加官方仓库
+# 娣诲姞瀹樻柟浠撳簱
 sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
 
-# 导入仓库签名
+# 瀵煎叆浠撳簱绛惧悕
 wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
 
-# 更新并安装
-sudo apt update
+# 鏇存柊骞跺畨瑁?sudo apt update
 sudo apt install -y postgresql-15 postgresql-contrib-15
 ```
 
-### 5.2 启动并设置开机自启
-
+### 5.2 鍚姩骞惰缃紑鏈鸿嚜鍚?
 ```bash
 sudo systemctl start postgresql
 sudo systemctl enable postgresql
 sudo systemctl status postgresql
 ```
 
-### 5.3 创建数据库和用户
+### 5.3 鍒涘缓鏁版嵁搴撳拰鐢ㄦ埛
 
 ```bash
-# 切换到 postgres 用户
+# 鍒囨崲鍒?postgres 鐢ㄦ埛
 sudo -u postgres psql
 
-# 在 psql 中执行以下命令
-```
+# 鍦?psql 涓墽琛屼互涓嬪懡浠?```
 
 ```sql
--- 创建数据库用户（修改密码！）
+-- 鍒涘缓鏁版嵁搴撶敤鎴凤紙淇敼瀵嗙爜锛侊級
 CREATE USER ocruser WITH PASSWORD 'YourStrongPassword123!';
 
--- 创建数据库
-CREATE DATABASE ocr_db OWNER ocruser;
+-- 鍒涘缓鏁版嵁搴?CREATE DATABASE ocr_db OWNER ocruser;
 
--- 授予权限
+-- 鎺堜簣鏉冮檺
 GRANT ALL PRIVILEGES ON DATABASE ocr_db TO ocruser;
 
--- 允许创建扩展（如果需要）
+-- 鍏佽鍒涘缓鎵╁睍锛堝鏋滈渶瑕侊級
 ALTER USER ocruser CREATEDB;
 
--- 退出
-\q
+-- 閫€鍑?\q
 ```
 
-### 5.4 配置远程访问（如需）
-
-编辑 `/etc/postgresql/15/main/postgresql.conf`：
-
+### 5.4 閰嶇疆杩滅▼璁块棶锛堝闇€锛?
+缂栬緫 `/etc/postgresql/15/main/postgresql.conf`锛?
 ```bash
 sudo vim /etc/postgresql/15/main/postgresql.conf
 
-# 修改监听地址（默认只监听 localhost）
-listen_addresses = 'localhost'  # 如需远程访问改为 '*'
+# 淇敼鐩戝惉鍦板潃锛堥粯璁ゅ彧鐩戝惉 localhost锛?listen_addresses = 'localhost'  # 濡傞渶杩滅▼璁块棶鏀逛负 '*'
 ```
 
-编辑 `/etc/postgresql/15/main/pg_hba.conf`：
-
+缂栬緫 `/etc/postgresql/15/main/pg_hba.conf`锛?
 ```bash
 sudo vim /etc/postgresql/15/main/pg_hba.conf
 
-# 如需远程访问，添加：
+# 濡傞渶杩滅▼璁块棶锛屾坊鍔狅細
 # host    ocr_db    ocruser    0.0.0.0/0    scram-sha-256
 ```
 
 ```bash
-# 重启 PostgreSQL
+# 閲嶅惎 PostgreSQL
 sudo systemctl restart postgresql
 ```
 
-### 5.5 验证数据库连接
-
+### 5.5 楠岃瘉鏁版嵁搴撹繛鎺?
 ```bash
-# 测试连接
+# 娴嬭瘯杩炴帴
 psql -h localhost -U ocruser -d ocr_db -c "SELECT version();"
 
-# 输入密码后应显示 PostgreSQL 版本信息
+# 杈撳叆瀵嗙爜鍚庡簲鏄剧ず PostgreSQL 鐗堟湰淇℃伅
 ```
 
 ---
 
-## 6. Redis 缓存安装
+## 6. Redis 缂撳瓨瀹夎
 
-### 6.1 安装 Redis 7
+### 6.1 瀹夎 Redis 7
 
 ```bash
-# 添加官方仓库
+# 娣诲姞瀹樻柟浠撳簱
 curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
 
-# 安装
+# 瀹夎
 sudo apt update
 sudo apt install -y redis
 ```
 
-### 6.2 配置 Redis
+### 6.2 閰嶇疆 Redis
 
-编辑 `/etc/redis/redis.conf`：
-
+缂栬緫 `/etc/redis/redis.conf`锛?
 ```bash
 sudo vim /etc/redis/redis.conf
 ```
 
-修改以下配置：
-
+淇敼浠ヤ笅閰嶇疆锛?
 ```conf
-# 绑定地址（本机访问）
+# 缁戝畾鍦板潃锛堟湰鏈鸿闂級
 bind 127.0.0.1 -::1
 
-# 端口
+# 绔彛
 port 6379
 
-# 后台运行
+# 鍚庡彴杩愯
 daemonize yes
 
-# 最大内存（根据服务器配置调整）
+# 鏈€澶у唴瀛橈紙鏍规嵁鏈嶅姟鍣ㄩ厤缃皟鏁达級
 maxmemory 2gb
 
-# 内存淘汰策略
+# 鍐呭瓨娣樻卑绛栫暐
 maxmemory-policy allkeys-lru
 
-# 持久化配置
-appendonly yes
+# 鎸佷箙鍖栭厤缃?appendonly yes
 appendfilename "appendonly.aof"
 
-# 日志级别
+# 鏃ュ織绾у埆
 loglevel notice
 logfile /var/log/redis/redis-server.log
 ```
 
-### 6.3 启动 Redis
+### 6.3 鍚姩 Redis
 
 ```bash
 sudo systemctl restart redis-server
@@ -477,52 +442,50 @@ sudo systemctl enable redis-server
 sudo systemctl status redis-server
 ```
 
-### 6.4 验证 Redis
+### 6.4 楠岃瘉 Redis
 
 ```bash
 redis-cli ping
-# 应返回: PONG
+# 搴旇繑鍥? PONG
 
 redis-cli info server | head -5
 ```
 
 ---
 
-## 7. Python 环境配置
+## 7. Python 鐜閰嶇疆
 
-### 7.1 安装 Python 3.10
+### 7.1 瀹夎 Python 3.10
 
 ```bash
-# Ubuntu 22.04 自带 Python 3.10
+# Ubuntu 22.04 鑷甫 Python 3.10
 python3 --version
 
-# 如果版本不对或没有，安装
+# 濡傛灉鐗堟湰涓嶅鎴栨病鏈夛紝瀹夎
 sudo apt install -y python3.10 python3.10-venv python3.10-dev
 
-# 安装 pip
+# 瀹夎 pip
 sudo apt install -y python3-pip
 ```
 
-### 7.2 创建虚拟环境
+### 7.2 鍒涘缓铏氭嫙鐜
 
 ```bash
-# 切换到项目目录
-cd /opt/ocr
+# 鍒囨崲鍒伴」鐩洰褰?cd /opt/ocr
 
-# 创建虚拟环境
+# 鍒涘缓铏氭嫙鐜
 python3.10 -m venv .venv
 
-# 激活虚拟环境
-source .venv/bin/activate
+# 婵€娲昏櫄鎷熺幆澧?source .venv/bin/activate
 
-# 升级 pip
+# 鍗囩骇 pip
 pip install --upgrade pip setuptools wheel
 ```
 
-### 7.3 配置 pip 镜像（加速下载）
+### 7.3 閰嶇疆 pip 闀滃儚锛堝姞閫熶笅杞斤級
 
 ```bash
-# 创建 pip 配置
+# 鍒涘缓 pip 閰嶇疆
 mkdir -p ~/.pip
 cat > ~/.pip/pip.conf << 'EOF'
 [global]
@@ -533,61 +496,55 @@ EOF
 
 ---
 
-## 8. 项目代码部署
+## 8. 椤圭洰浠ｇ爜閮ㄧ讲
 
-### 8.1 克隆代码
+### 8.1 鍏嬮殕浠ｇ爜
 
 ```bash
-# 确保在项目目录
-cd /opt/ocr
+# 纭繚鍦ㄩ」鐩洰褰?cd /opt/ocr
 
-# 从 GitHub 克隆（替换为你的仓库地址）
-git clone https://github.com/YOUR_USERNAME/OCR.git .
+# 浠?GitHub 鍏嬮殕锛堟浛鎹负浣犵殑浠撳簱鍦板潃锛?git clone https://github.com/YOUR_USERNAME/OCR.git .
 
-# 或者如果目录非空，先清理
-# rm -rf /opt/ocr/*
+# 鎴栬€呭鏋滅洰褰曢潪绌猴紝鍏堟竻鐞?# rm -rf /opt/ocr/*
 # git clone https://github.com/YOUR_USERNAME/OCR.git .
 ```
 
-### 8.2 创建必要目录
+### 8.2 鍒涘缓蹇呰鐩綍
 
 ```bash
 cd /opt/ocr
 
-# 创建上传目录
+# 鍒涘缓涓婁紶鐩綍
 mkdir -p uploads
 
-# 创建缓存目录
+# 鍒涘缓缂撳瓨鐩綍
 mkdir -p .cache
 
-# 创建日志目录
+# 鍒涘缓鏃ュ織鐩綍
 mkdir -p logs
 
-# 设置权限
+# 璁剧疆鏉冮檺
 chmod 755 uploads .cache logs
 ```
 
-### 8.3 安装 Python 依赖
+### 8.3 瀹夎 Python 渚濊禆
 
 ```bash
-# 确保虚拟环境已激活
-source /opt/ocr/.venv/bin/activate
+# 纭繚铏氭嫙鐜宸叉縺娲?source /opt/ocr/.venv/bin/activate
 
-# 安装依赖
+# 瀹夎渚濊禆
 pip install -r requirements.txt
 ```
 
-> **注意**：`paddlepaddle-gpu` 会自动下载约 2-3 GB，首次安装需要较长时间。
-
-### 8.4 验证 PaddlePaddle GPU
+> **娉ㄦ剰**锛歚paddlepaddle-gpu` 浼氳嚜鍔ㄤ笅杞界害 2-3 GB锛岄娆″畨瑁呴渶瑕佽緝闀挎椂闂淬€?
+### 8.4 楠岃瘉 PaddlePaddle GPU
 
 ```bash
-# 测试 PaddlePaddle GPU
+# 娴嬭瘯 PaddlePaddle GPU
 python -c "import paddle; paddle.utils.run_check()"
 ```
 
-**预期输出**：
-
+**棰勬湡杈撳嚭**锛?
 ```
 Running verify PaddlePaddle program ...
 W0330 14:00:00.000000 12345 gpu_resources.cc:119] Please NOTE: device: 0, GPU Compute Capability: 9.0, Driver API Version: 12.2, Runtime API Version: 12.2
@@ -596,36 +553,34 @@ PaddlePaddle works well on 1 GPU.
 PaddlePaddle is installed successfully! Let's start deep learning with PaddlePaddle now.
 ```
 
-### 8.5 配置环境变量
+### 8.5 閰嶇疆鐜鍙橀噺
 
-创建 `/opt/ocr/.env` 文件：
-
+鍒涘缓 `/opt/ocr/.env` 鏂囦欢锛?
 ```bash
 cat > /opt/ocr/.env << 'EOF'
-# 数据库配置（修改密码！）
+# 鏁版嵁搴撻厤缃紙淇敼瀵嗙爜锛侊級
 DATABASE_URL=postgresql+asyncpg://ocruser:YourStrongPassword123!@localhost:5432/ocr_db
 
-# Redis 配置
+# Redis 閰嶇疆
 REDIS_URL=redis://127.0.0.1:6379/0
 
-# 目录配置
+# 鐩綍閰嶇疆
 UPLOAD_DIR=/opt/ocr/uploads
 CACHE_DIR=/opt/ocr/.cache
 
-# OCR 配置（H20 GPU）
-OCR_USE_GPU=true
+# OCR 閰嶇疆锛圚20 GPU锛?OCR_USE_GPU=true
 OCR_DEVICE=gpu:0
 OCR_LANG=ch
 
-# 初始数据导入配置（可选）
+# 鍒濆鏁版嵁瀵煎叆閰嶇疆锛堝彲閫夛級
 INIT_ARCHIVE_EXCEL_PATH=/opt/ocr/data/archive.xls
 INIT_ARCHIVE_BATCH_ID=init_import
 EOF
 ```
 
-### 8.6 加载环境变量
+### 8.6 鍔犺浇鐜鍙橀噺
 
-在 `.bashrc` 中添加自动加载：
+鍦?`.bashrc` 涓坊鍔犺嚜鍔ㄥ姞杞斤細
 
 ```bash
 echo 'set -a; source /opt/ocr/.env; set +a' >> ~/.bashrc
@@ -634,21 +589,20 @@ source ~/.bashrc
 
 ---
 
-## 9. 后端服务配置
+## 9. 鍚庣鏈嶅姟閰嶇疆
 
-### 9.1 初始化数据库
+### 9.1 鍒濆鍖栨暟鎹簱
 
 ```bash
 cd /opt/ocr
 source .venv/bin/activate
 
-# 加载环境变量
+# 鍔犺浇鐜鍙橀噺
 set -a; source .env; set +a
 
-# 运行数据库迁移（如果有 Alembic）
-# alembic upgrade head
+# 杩愯鏁版嵁搴撹縼绉伙紙濡傛灉鏈?Alembic锛?# alembic upgrade head
 
-# 或者通过 FastAPI 启动时自动创建表
+# 鎴栬€呴€氳繃 FastAPI 鍚姩鏃惰嚜鍔ㄥ垱寤鸿〃
 python -c "
 from app.database import engine, Base
 import asyncio
@@ -656,32 +610,30 @@ import asyncio
 async def init():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    print('数据库表创建完成')
+    print('鏁版嵁搴撹〃鍒涘缓瀹屾垚')
 
 asyncio.run(init())
 "
 ```
 
-### 9.2 测试后端启动
+### 9.2 娴嬭瘯鍚庣鍚姩
 
 ```bash
 cd /opt/ocr
 source .venv/bin/activate
 set -a; source .env; set +a
 
-# 手动启动测试
+# 鎵嬪姩鍚姩娴嬭瘯
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-# 看到以下输出表示成功：
-# INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+# 鐪嬪埌浠ヤ笅杈撳嚭琛ㄧず鎴愬姛锛?# INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 # INFO:     Started server process [12345]
 # INFO:     Waiting for application startup.
 # INFO:     Application startup complete.
 ```
 
-按 `Ctrl+C` 停止测试。
-
-### 9.3 创建 systemd 服务
+鎸?`Ctrl+C` 鍋滄娴嬭瘯銆?
+### 9.3 鍒涘缓 systemd 鏈嶅姟
 
 ```bash
 sudo tee /etc/systemd/system/ocr.service << 'EOF'
@@ -698,7 +650,7 @@ WorkingDirectory=/opt/ocr
 Environment="PATH=/opt/ocr/.venv/bin:/usr/local/cuda-12.2/bin:/usr/local/bin:/usr/bin"
 EnvironmentFile=/opt/ocr/.env
 
-# 启动命令
+# 鍚姩鍛戒护
 ExecStart=/opt/ocr/.venv/bin/uvicorn app.main:app \
     --host 0.0.0.0 \
     --port 8000 \
@@ -706,15 +658,15 @@ ExecStart=/opt/ocr/.venv/bin/uvicorn app.main:app \
     --log-level info \
     --access-log
 
-# 重启策略
+# 閲嶅惎绛栫暐
 Restart=always
 RestartSec=5
 
-# 资源限制
+# 璧勬簮闄愬埗
 LimitNOFILE=65535
 LimitNPROC=65535
 
-# 日志
+# 鏃ュ織
 StandardOutput=append:/opt/ocr/logs/uvicorn.log
 StandardError=append:/opt/ocr/logs/uvicorn.error.log
 
@@ -723,85 +675,79 @@ WantedBy=multi-user.target
 EOF
 ```
 
-### 9.4 启动后端服务
+### 9.4 鍚姩鍚庣鏈嶅姟
 
 ```bash
-# 重新加载 systemd
+# 閲嶆柊鍔犺浇 systemd
 sudo systemctl daemon-reload
 
-# 启动服务
+# 鍚姩鏈嶅姟
 sudo systemctl start ocr
 
-# 设置开机自启
-sudo systemctl enable ocr
+# 璁剧疆寮€鏈鸿嚜鍚?sudo systemctl enable ocr
 
-# 查看状态
-sudo systemctl status ocr
+# 鏌ョ湅鐘舵€?sudo systemctl status ocr
 ```
 
 ---
 
-## 10. 前端构建与部署
-
-### 10.1 安装 Node.js 20
+## 10. 鍓嶇鏋勫缓涓庨儴缃?
+### 10.1 瀹夎 Node.js 20
 
 ```bash
-# 使用 NodeSource 仓库
+# 浣跨敤 NodeSource 浠撳簱
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# 验证
+# 楠岃瘉
 node --version  # v20.x.x
 npm --version   # 10.x.x
 ```
 
-### 10.2 安装 pnpm（推荐）
+### 10.2 瀹夎 pnpm锛堟帹鑽愶級
 
 ```bash
-npm install -g pnpm
-pnpm --version
+npm --version
 ```
 
-### 10.3 构建前端
+### 10.3 鏋勫缓鍓嶇
 
 ```bash
 cd /opt/ocr/frontend
 
-# 安装依赖
-pnpm install
-# 或 npm install
+# 瀹夎渚濊禆
+npm ci
+# 鎴?npm install
 
-# 配置 API 地址（生产环境）
+# 閰嶇疆 API 鍦板潃锛堢敓浜х幆澧冿級
 cat > .env.production << 'EOF'
 VITE_API_BASE_URL=/api
 EOF
 
-# 构建
-pnpm build
-# 或 npm run build
+# 鏋勫缓
+npm run build
+# 鎴?npm run build
 
-# 构建产物在 dist 目录
+# 鏋勫缓浜х墿鍦?dist 鐩綍
 ls -la dist/
 ```
 
-### 10.4 部署前端静态文件
-
+### 10.4 閮ㄧ讲鍓嶇闈欐€佹枃浠?
 ```bash
-# 创建 Nginx 静态文件目录
-sudo mkdir -p /var/www/ocr
+# 鍒涘缓 Nginx 闈欐€佹枃浠剁洰褰?sudo mkdir -p /var/www/ocr
 
-# 复制构建产物
+# 澶嶅埗鏋勫缓浜х墿
 sudo cp -r /opt/ocr/frontend/dist/* /var/www/ocr/
 
-# 设置权限
+# 璁剧疆鏉冮檺
 sudo chown -R www-data:www-data /var/www/ocr
 ```
 
 ---
 
-## 11. Nginx 反向代理配置
+## 11. Nginx 鍙嶅悜浠ｇ悊閰嶇疆
 
-### 11.1 安装 Nginx
+### 11.1 瀹夎 Nginx
 
 ```bash
 sudo apt install -y nginx
@@ -809,30 +755,28 @@ sudo systemctl start nginx
 sudo systemctl enable nginx
 ```
 
-### 11.2 配置 Nginx
+### 11.2 閰嶇疆 Nginx
 
 ```bash
 sudo tee /etc/nginx/sites-available/ocr << 'EOF'
 server {
     listen 80;
-    server_name _;  # 替换为你的域名或 IP
+    server_name _;  # 鏇挎崲涓轰綘鐨勫煙鍚嶆垨 IP
 
-    # 前端静态文件
-    root /var/www/ocr;
+    # 鍓嶇闈欐€佹枃浠?    root /var/www/ocr;
     index index.html;
 
-    # Gzip 压缩
+    # Gzip 鍘嬬缉
     gzip on;
     gzip_vary on;
     gzip_min_length 1024;
     gzip_types text/plain text/css text/xml text/javascript application/javascript application/json application/xml;
 
-    # 前端路由（SPA）
-    location / {
+    # 鍓嶇璺敱锛圫PA锛?    location / {
         try_files $uri $uri/ /index.html;
     }
 
-    # 后端 API 代理
+    # 鍚庣 API 浠ｇ悊
     location /api/ {
         proxy_pass http://127.0.0.1:8000/api/;
         proxy_http_version 1.1;
@@ -841,33 +785,30 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         
-        # WebSocket 支持
+        # WebSocket 鏀寔
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
         
-        # 超时设置（OCR 可能耗时较长）
-        proxy_connect_timeout 300;
+        # 瓒呮椂璁剧疆锛圤CR 鍙兘鑰楁椂杈冮暱锛?        proxy_connect_timeout 300;
         proxy_send_timeout 300;
         proxy_read_timeout 300;
         
-        # 文件上传大小限制
+        # 鏂囦欢涓婁紶澶у皬闄愬埗
         client_max_body_size 100M;
     }
 
-    # 上传文件访问
+    # 涓婁紶鏂囦欢璁块棶
     location /uploads/ {
         alias /opt/ocr/uploads/;
         expires 30d;
         add_header Cache-Control "public, immutable";
     }
 
-    # 健康检查
-    location /health {
+    # 鍋ュ悍妫€鏌?    location /health {
         proxy_pass http://127.0.0.1:8000/api/health;
     }
 
-    # 静态资源缓存
-    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
+    # 闈欐€佽祫婧愮紦瀛?    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
     }
@@ -875,49 +816,47 @@ server {
 EOF
 ```
 
-### 11.3 启用配置
+### 11.3 鍚敤閰嶇疆
 
 ```bash
-# 创建符号链接
+# 鍒涘缓绗﹀彿閾炬帴
 sudo ln -sf /etc/nginx/sites-available/ocr /etc/nginx/sites-enabled/
 
-# 删除默认配置（可选）
+# 鍒犻櫎榛樿閰嶇疆锛堝彲閫夛級
 sudo rm -f /etc/nginx/sites-enabled/default
 
-# 测试配置
+# 娴嬭瘯閰嶇疆
 sudo nginx -t
 
-# 重新加载
+# 閲嶆柊鍔犺浇
 sudo systemctl reload nginx
 ```
 
 ---
 
-## 12. SSL 证书配置（可选）
+## 12. SSL 璇佷功閰嶇疆锛堝彲閫夛級
 
-### 12.1 使用 Let's Encrypt（需要域名）
+### 12.1 浣跨敤 Let's Encrypt锛堥渶瑕佸煙鍚嶏級
 
 ```bash
-# 安装 Certbot
+# 瀹夎 Certbot
 sudo apt install -y certbot python3-certbot-nginx
 
-# 申请证书（替换域名）
+# 鐢宠璇佷功锛堟浛鎹㈠煙鍚嶏級
 sudo certbot --nginx -d your-domain.com
 
-# 自动续期测试
+# 鑷姩缁湡娴嬭瘯
 sudo certbot renew --dry-run
 ```
 
-### 12.2 使用自签名证书（测试环境）
-
+### 12.2 浣跨敤鑷鍚嶈瘉涔︼紙娴嬭瘯鐜锛?
 ```bash
-# 生成自签名证书
-sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+# 鐢熸垚鑷鍚嶈瘉涔?sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
     -keyout /etc/ssl/private/ocr-selfsigned.key \
     -out /etc/ssl/certs/ocr-selfsigned.crt \
     -subj "/CN=localhost"
 
-# 在 Nginx 配置中添加 SSL
+# 鍦?Nginx 閰嶇疆涓坊鍔?SSL
 # listen 443 ssl;
 # ssl_certificate /etc/ssl/certs/ocr-selfsigned.crt;
 # ssl_certificate_key /etc/ssl/private/ocr-selfsigned.key;
@@ -925,60 +864,51 @@ sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 
 ---
 
-## 13. 初始数据导入
+## 13. 鍒濆鏁版嵁瀵煎叆
 
-### 13.1 准备归档数据文件
+### 13.1 鍑嗗褰掓。鏁版嵁鏂囦欢
 
 ```bash
-# 创建数据目录
+# 鍒涘缓鏁版嵁鐩綍
 mkdir -p /opt/ocr/data
 
-# 上传归档 Excel 文件到 /opt/ocr/data/archive.xls
-# 可以使用 scp 或 sftp：
-# scp archive.xls user@server:/opt/ocr/data/
+# 涓婁紶褰掓。 Excel 鏂囦欢鍒?/opt/ocr/data/archive.xls
+# 鍙互浣跨敤 scp 鎴?sftp锛?# scp archive.xls user@server:/opt/ocr/data/
 ```
 
-### 13.2 执行初始导入
+### 13.2 鎵ц鍒濆瀵煎叆
 
 ```bash
 cd /opt/ocr
 source .venv/bin/activate
 set -a; source .env; set +a
 
-# 方式一：使用环境变量
-export INIT_ARCHIVE_EXCEL_PATH=/opt/ocr/data/archive.xls
+# 鏂瑰紡涓€锛氫娇鐢ㄧ幆澧冨彉閲?export INIT_ARCHIVE_EXCEL_PATH=/opt/ocr/data/archive.xls
 export INIT_ARCHIVE_BATCH_ID=init_import
 python init_archive_db.py
 
-# 方式二：使用命令行参数
-python init_archive_db.py /opt/ocr/data/archive.xls
+# 鏂瑰紡浜岋細浣跨敤鍛戒护琛屽弬鏁?python init_archive_db.py /opt/ocr/data/archive.xls
 
-# 方式三：交互式（如果脚本支持）
-python init_archive_db.py
+# 鏂瑰紡涓夛細浜や簰寮忥紙濡傛灉鑴氭湰鏀寔锛?python init_archive_db.py
 ```
 
-### 13.3 验证导入结果
+### 13.3 楠岃瘉瀵煎叆缁撴灉
 
 ```bash
-# 连接数据库
-psql -h localhost -U ocruser -d ocr_db
+# 杩炴帴鏁版嵁搴?psql -h localhost -U ocruser -d ocr_db
 
-# 查询导入记录数
-SELECT COUNT(*) FROM archive_records;
+# 鏌ヨ瀵煎叆璁板綍鏁?SELECT COUNT(*) FROM archive_records;
 
-# 查看前几条记录
-SELECT id, filename, archive_no FROM archive_records LIMIT 5;
+# 鏌ョ湅鍓嶅嚑鏉¤褰?SELECT id, filename, archive_no FROM archive_records LIMIT 5;
 
-# 退出
-\q
+# 閫€鍑?\q
 ```
 
 ---
 
-## 14. 服务验证
+## 14. 鏈嶅姟楠岃瘉
 
-### 14.1 检查所有服务状态
-
+### 14.1 妫€鏌ユ墍鏈夋湇鍔＄姸鎬?
 ```bash
 # PostgreSQL
 sudo systemctl status postgresql
@@ -986,125 +916,117 @@ sudo systemctl status postgresql
 # Redis
 sudo systemctl status redis-server
 
-# OCR 后端
+# OCR 鍚庣
 sudo systemctl status ocr
 
 # Nginx
 sudo systemctl status nginx
 ```
 
-### 14.2 测试 API
+### 14.2 娴嬭瘯 API
 
 ```bash
-# 健康检查
-curl http://localhost:8000/api/health
+# 鍋ュ悍妫€鏌?curl http://localhost:8000/api/health
 
-# 应返回类似：
+# 搴旇繑鍥炵被浼硷細
 # {"status": "ok", "database": "connected", "redis": "connected"}
 
-# 通过 Nginx 访问
+# 閫氳繃 Nginx 璁块棶
 curl http://localhost/api/health
 ```
 
-### 14.3 测试 OCR 功能
+### 14.3 娴嬭瘯 OCR 鍔熻兘
 
 ```bash
-# 准备测试图片
-# 上传测试文件
+# 鍑嗗娴嬭瘯鍥剧墖
+# 涓婁紶娴嬭瘯鏂囦欢
 curl -X POST http://localhost/api/ocr/upload \
     -F "file=@/path/to/test-image.jpg"
 
-# 或在浏览器中访问前端界面
+# 鎴栧湪娴忚鍣ㄤ腑璁块棶鍓嶇鐣岄潰
 # http://YOUR_SERVER_IP/
 ```
 
-### 14.4 GPU 状态监控
-
+### 14.4 GPU 鐘舵€佺洃鎺?
 ```bash
-# 查看 GPU 使用情况
+# 鏌ョ湅 GPU 浣跨敤鎯呭喌
 nvidia-smi
 
-# 持续监控（每 2 秒刷新）
+# 鎸佺画鐩戞帶锛堟瘡 2 绉掑埛鏂帮級
 watch -n 2 nvidia-smi
 
-# 查看 GPU 进程
+# 鏌ョ湅 GPU 杩涚▼
 nvidia-smi pmon -i 0
 ```
 
 ---
 
-## 15. systemd 服务管理
+## 15. systemd 鏈嶅姟绠＄悊
 
-### 15.1 常用命令
+### 15.1 甯哥敤鍛戒护
 
 ```bash
-# 启动服务
+# 鍚姩鏈嶅姟
 sudo systemctl start ocr
 
-# 停止服务
+# 鍋滄鏈嶅姟
 sudo systemctl stop ocr
 
-# 重启服务
+# 閲嶅惎鏈嶅姟
 sudo systemctl restart ocr
 
-# 重新加载配置（不中断服务）
-sudo systemctl reload ocr
+# 閲嶆柊鍔犺浇閰嶇疆锛堜笉涓柇鏈嶅姟锛?sudo systemctl reload ocr
 
-# 查看状态
-sudo systemctl status ocr
+# 鏌ョ湅鐘舵€?sudo systemctl status ocr
 
-# 查看日志
+# 鏌ョ湅鏃ュ織
 sudo journalctl -u ocr -f
 
-# 开机自启
-sudo systemctl enable ocr
+# 寮€鏈鸿嚜鍚?sudo systemctl enable ocr
 
-# 禁用开机自启
-sudo systemctl disable ocr
+# 绂佺敤寮€鏈鸿嚜鍚?sudo systemctl disable ocr
 ```
 
-### 15.2 服务依赖管理
+### 15.2 鏈嶅姟渚濊禆绠＄悊
 
 ```bash
-# 查看服务依赖
+# 鏌ョ湅鏈嶅姟渚濊禆
 systemctl list-dependencies ocr
 
-# 按顺序启动所有相关服务
-sudo systemctl start postgresql redis-server ocr nginx
+# 鎸夐『搴忓惎鍔ㄦ墍鏈夌浉鍏虫湇鍔?sudo systemctl start postgresql redis-server ocr nginx
 ```
 
 ---
 
-## 16. 日志管理
+## 16. 鏃ュ織绠＄悊
 
-### 16.1 日志位置
+### 16.1 鏃ュ織浣嶇疆
 
-| 服务 | 日志位置 |
+| 鏈嶅姟 | 鏃ュ織浣嶇疆 |
 |------|----------|
-| OCR 后端 | `/opt/ocr/logs/uvicorn.log` |
-| OCR 错误 | `/opt/ocr/logs/uvicorn.error.log` |
-| Nginx 访问 | `/var/log/nginx/access.log` |
-| Nginx 错误 | `/var/log/nginx/error.log` |
+| OCR 鍚庣 | `/opt/ocr/logs/uvicorn.log` |
+| OCR 閿欒 | `/opt/ocr/logs/uvicorn.error.log` |
+| Nginx 璁块棶 | `/var/log/nginx/access.log` |
+| Nginx 閿欒 | `/var/log/nginx/error.log` |
 | PostgreSQL | `/var/log/postgresql/postgresql-15-main.log` |
 | Redis | `/var/log/redis/redis-server.log` |
 
-### 16.2 查看日志
+### 16.2 鏌ョ湅鏃ュ織
 
 ```bash
-# 实时查看 OCR 后端日志
+# 瀹炴椂鏌ョ湅 OCR 鍚庣鏃ュ織
 tail -f /opt/ocr/logs/uvicorn.log
 
-# 查看最近 100 行错误日志
-tail -100 /opt/ocr/logs/uvicorn.error.log
+# 鏌ョ湅鏈€杩?100 琛岄敊璇棩蹇?tail -100 /opt/ocr/logs/uvicorn.error.log
 
-# 使用 journalctl
+# 浣跨敤 journalctl
 sudo journalctl -u ocr --since "1 hour ago"
 
-# 查看 Nginx 错误
+# 鏌ョ湅 Nginx 閿欒
 sudo tail -f /var/log/nginx/error.log
 ```
 
-### 16.3 日志轮转配置
+### 16.3 鏃ュ織杞浆閰嶇疆
 
 ```bash
 sudo tee /etc/logrotate.d/ocr << 'EOF'
@@ -1126,73 +1048,61 @@ EOF
 
 ---
 
-## 17. 备份与恢复
-
-### 17.1 数据库备份
-
+## 17. 澶囦唤涓庢仮澶?
+### 17.1 鏁版嵁搴撳浠?
 ```bash
-# 创建备份目录
+# 鍒涘缓澶囦唤鐩綍
 mkdir -p /opt/ocr/backups
 
-# 备份数据库
-pg_dump -h localhost -U ocruser -d ocr_db -F c -f /opt/ocr/backups/ocr_db_$(date +%Y%m%d_%H%M%S).dump
+# 澶囦唤鏁版嵁搴?pg_dump -h localhost -U ocruser -d ocr_db -F c -f /opt/ocr/backups/ocr_db_$(date +%Y%m%d_%H%M%S).dump
 
-# 定时备份（添加到 crontab）
-crontab -e
+# 瀹氭椂澶囦唤锛堟坊鍔犲埌 crontab锛?crontab -e
 
-# 每天凌晨 2 点备份
-0 2 * * * pg_dump -h localhost -U ocruser -d ocr_db -F c -f /opt/ocr/backups/ocr_db_$(date +\%Y\%m\%d).dump
+# 姣忓ぉ鍑屾櫒 2 鐐瑰浠?0 2 * * * pg_dump -h localhost -U ocruser -d ocr_db -F c -f /opt/ocr/backups/ocr_db_$(date +\%Y\%m\%d).dump
 ```
 
-### 17.2 恢复数据库
-
+### 17.2 鎭㈠鏁版嵁搴?
 ```bash
-# 恢复备份
+# 鎭㈠澶囦唤
 pg_restore -h localhost -U ocruser -d ocr_db -c /opt/ocr/backups/ocr_db_20260330.dump
 ```
 
-### 17.3 备份上传文件
+### 17.3 澶囦唤涓婁紶鏂囦欢
 
 ```bash
-# 备份上传目录
+# 澶囦唤涓婁紶鐩綍
 tar -czvf /opt/ocr/backups/uploads_$(date +%Y%m%d).tar.gz /opt/ocr/uploads/
 
-# 恢复
+# 鎭㈠
 tar -xzvf /opt/ocr/backups/uploads_20260330.tar.gz -C /
 ```
 
 ---
 
-## 18. 性能优化
+## 18. 鎬ц兘浼樺寲
 
-### 18.1 H20 GPU 优化
+### 18.1 H20 GPU 浼樺寲
 
 ```bash
-# 设置 GPU 持久化模式（减少启动延迟）
-sudo nvidia-smi -pm 1
+# 璁剧疆 GPU 鎸佷箙鍖栨ā寮忥紙鍑忓皯鍚姩寤惰繜锛?sudo nvidia-smi -pm 1
 
-# 设置 GPU 计算模式为独占
-sudo nvidia-smi -c 3
+# 璁剧疆 GPU 璁＄畻妯″紡涓虹嫭鍗?sudo nvidia-smi -c 3
 
-# 设置功耗限制（可选，默认 400W）
-# sudo nvidia-smi -pl 350
+# 璁剧疆鍔熻€楅檺鍒讹紙鍙€夛紝榛樿 400W锛?# sudo nvidia-smi -pl 350
 ```
 
-### 18.2 PostgreSQL 优化
+### 18.2 PostgreSQL 浼樺寲
 
-编辑 `/etc/postgresql/15/main/postgresql.conf`：
-
+缂栬緫 `/etc/postgresql/15/main/postgresql.conf`锛?
 ```conf
-# 内存配置（根据服务器内存调整）
-shared_buffers = 8GB
+# 鍐呭瓨閰嶇疆锛堟牴鎹湇鍔″櫒鍐呭瓨璋冩暣锛?shared_buffers = 8GB
 effective_cache_size = 24GB
 work_mem = 256MB
 maintenance_work_mem = 2GB
 
-# 连接数
-max_connections = 200
+# 杩炴帴鏁?max_connections = 200
 
-# WAL 配置
+# WAL 閰嶇疆
 wal_buffers = 64MB
 checkpoint_completion_target = 0.9
 ```
@@ -1201,33 +1111,30 @@ checkpoint_completion_target = 0.9
 sudo systemctl restart postgresql
 ```
 
-### 18.3 Redis 优化
+### 18.3 Redis 浼樺寲
 
-编辑 `/etc/redis/redis.conf`：
-
+缂栬緫 `/etc/redis/redis.conf`锛?
 ```conf
-# 最大内存
-maxmemory 4gb
+# 鏈€澶у唴瀛?maxmemory 4gb
 
-# 淘汰策略
+# 娣樻卑绛栫暐
 maxmemory-policy allkeys-lru
 
-# 禁用 THP
-# 需要在系统级别设置
+# 绂佺敤 THP
+# 闇€瑕佸湪绯荤粺绾у埆璁剧疆
 ```
 
 ```bash
-# 禁用透明大页
+# 绂佺敤閫忔槑澶ч〉
 echo never | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
 sudo systemctl restart redis-server
 ```
 
-### 18.4 系统级优化
-
+### 18.4 绯荤粺绾т紭鍖?
 ```bash
-# 网络优化
+# 缃戠粶浼樺寲
 sudo tee -a /etc/sysctl.conf << 'EOF'
-# TCP 优化
+# TCP 浼樺寲
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
@@ -1237,287 +1144,241 @@ net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 3
 EOF
 
-# 应用
+# 搴旂敤
 sudo sysctl -p
 ```
 
 ---
 
-## 19. 常见问题排查
+## 19. 甯歌闂鎺掓煡
 
-### Q1：nvidia-smi 显示 "No devices were found"
+### Q1锛歯vidia-smi 鏄剧ず "No devices were found"
 
-**原因**：驱动未正确安装或 GPU 未被识别。
-
-**解决方案**：
-
+**鍘熷洜**锛氶┍鍔ㄦ湭姝ｇ‘瀹夎鎴?GPU 鏈璇嗗埆銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查 GPU 硬件
+# 妫€鏌?GPU 纭欢
 lspci | grep -i nvidia
 
-# 重新安装驱动
+# 閲嶆柊瀹夎椹卞姩
 sudo apt purge nvidia-*
 sudo apt autoremove
 sudo ubuntu-drivers autoinstall
 sudo reboot
 ```
 
-### Q2：CUDA 版本不匹配
-
-**原因**：驱动支持的 CUDA 版本与安装的 Toolkit 不一致。
-
-**解决方案**：
-
+### Q2锛欳UDA 鐗堟湰涓嶅尮閰?
+**鍘熷洜**锛氶┍鍔ㄦ敮鎸佺殑 CUDA 鐗堟湰涓庡畨瑁呯殑 Toolkit 涓嶄竴鑷淬€?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 查看驱动支持的 CUDA 版本
+# 鏌ョ湅椹卞姩鏀寔鐨?CUDA 鐗堟湰
 nvidia-smi | grep "CUDA Version"
 
-# 安装匹配的 CUDA Toolkit
-# 例如驱动显示 CUDA 12.2，则安装 cuda-toolkit-12-2
+# 瀹夎鍖归厤鐨?CUDA Toolkit
+# 渚嬪椹卞姩鏄剧ず CUDA 12.2锛屽垯瀹夎 cuda-toolkit-12-2
 ```
 
-### Q3：PaddlePaddle 无法使用 GPU
+### Q3锛歅addlePaddle 鏃犳硶浣跨敤 GPU
 
-**原因**：CUDA/cuDNN 环境配置问题。
-
-**解决方案**：
-
+**鍘熷洜**锛欳UDA/cuDNN 鐜閰嶇疆闂銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查环境变量
-echo $CUDA_HOME
+# 妫€鏌ョ幆澧冨彉閲?echo $CUDA_HOME
 echo $LD_LIBRARY_PATH
 
-# 验证 CUDA
+# 楠岃瘉 CUDA
 nvcc --version
 
-# 重新安装 paddlepaddle-gpu
+# 閲嶆柊瀹夎 paddlepaddle-gpu
 pip uninstall paddlepaddle-gpu
 pip install paddlepaddle-gpu==3.0.0b1 -i https://www.paddlepaddle.org.cn/packages/stable/cu123/
 
-# 测试
+# 娴嬭瘯
 python -c "import paddle; print(paddle.device.get_device())"
 ```
 
-### Q4：Redis 连接失败
+### Q4锛歊edis 杩炴帴澶辫触
 
-**原因**：Redis 未启动或配置错误。
-
-**解决方案**：
-
+**鍘熷洜**锛歊edis 鏈惎鍔ㄦ垨閰嶇疆閿欒銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查 Redis 状态
-sudo systemctl status redis-server
+# 妫€鏌?Redis 鐘舵€?sudo systemctl status redis-server
 
-# 检查端口
-ss -tlnp | grep 6379
+# 妫€鏌ョ鍙?ss -tlnp | grep 6379
 
-# 测试连接
+# 娴嬭瘯杩炴帴
 redis-cli ping
 
-# 查看日志
+# 鏌ョ湅鏃ュ織
 sudo tail -50 /var/log/redis/redis-server.log
 ```
 
-### Q5：PostgreSQL 连接被拒绝
-
-**原因**：认证配置或网络问题。
-
-**解决方案**：
-
+### Q5锛歅ostgreSQL 杩炴帴琚嫆缁?
+**鍘熷洜**锛氳璇侀厤缃垨缃戠粶闂銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查 PostgreSQL 状态
-sudo systemctl status postgresql
+# 妫€鏌?PostgreSQL 鐘舵€?sudo systemctl status postgresql
 
-# 检查监听
-ss -tlnp | grep 5432
+# 妫€鏌ョ洃鍚?ss -tlnp | grep 5432
 
-# 检查 pg_hba.conf 配置
+# 妫€鏌?pg_hba.conf 閰嶇疆
 sudo cat /etc/postgresql/15/main/pg_hba.conf | grep -v "^#"
 
-# 测试连接
+# 娴嬭瘯杩炴帴
 psql -h localhost -U ocruser -d ocr_db
 ```
 
-### Q6：Nginx 502 Bad Gateway
+### Q6锛歂ginx 502 Bad Gateway
 
-**原因**：后端服务未运行或端口错误。
-
-**解决方案**：
-
+**鍘熷洜**锛氬悗绔湇鍔℃湭杩愯鎴栫鍙ｉ敊璇€?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查后端服务
-sudo systemctl status ocr
+# 妫€鏌ュ悗绔湇鍔?sudo systemctl status ocr
 
-# 检查端口
-ss -tlnp | grep 8000
+# 妫€鏌ョ鍙?ss -tlnp | grep 8000
 
-# 直接测试后端
+# 鐩存帴娴嬭瘯鍚庣
 curl http://localhost:8000/api/health
 
-# 查看 Nginx 错误日志
+# 鏌ョ湅 Nginx 閿欒鏃ュ織
 sudo tail -50 /var/log/nginx/error.log
 ```
 
-### Q7：OCR 处理超时
+### Q7锛歄CR 澶勭悊瓒呮椂
 
-**原因**：大文件或 GPU 内存不足。
-
-**解决方案**：
-
+**鍘熷洜**锛氬ぇ鏂囦欢鎴?GPU 鍐呭瓨涓嶈冻銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 查看 GPU 内存使用
+# 鏌ョ湅 GPU 鍐呭瓨浣跨敤
 nvidia-smi
 
-# 减少并发 workers
-# 编辑 /etc/systemd/system/ocr.service
-# 将 --workers 4 改为 --workers 2
+# 鍑忓皯骞跺彂 workers
+# 缂栬緫 /etc/systemd/system/ocr.service
+# 灏?--workers 4 鏀逛负 --workers 2
 
-# 重启服务
+# 閲嶅惎鏈嶅姟
 sudo systemctl daemon-reload
 sudo systemctl restart ocr
 ```
 
-### Q8：模型下载失败
-
-**原因**：网络问题或 HuggingFace 访问受限。
-
-**解决方案**：
-
+### Q8锛氭ā鍨嬩笅杞藉け璐?
+**鍘熷洜**锛氱綉缁滈棶棰樻垨 HuggingFace 璁块棶鍙楅檺銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 使用百度 BOS 源（已在 config.py 中配置）
+# 浣跨敤鐧惧害 BOS 婧愶紙宸插湪 config.py 涓厤缃級
 export PADDLE_PDX_MODEL_SOURCE=bos
 
-# 或手动下载模型到缓存目录
-# 参考 PaddleOCR 官方文档
+# 鎴栨墜鍔ㄤ笅杞芥ā鍨嬪埌缂撳瓨鐩綍
+# 鍙傝€?PaddleOCR 瀹樻柟鏂囨。
 ```
 
-### Q9：磁盘空间不足
-
-**原因**：模型缓存或上传文件过多。
-
-**解决方案**：
-
+### Q9锛氱鐩樼┖闂翠笉瓒?
+**鍘熷洜**锛氭ā鍨嬬紦瀛樻垨涓婁紶鏂囦欢杩囧銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查磁盘使用
-df -h
+# 妫€鏌ョ鐩樹娇鐢?df -h
 
-# 查看大文件
-du -sh /opt/ocr/*
+# 鏌ョ湅澶ф枃浠?du -sh /opt/ocr/*
 du -sh /opt/ocr/.cache/*
 
-# 清理旧日志
-sudo journalctl --vacuum-time=7d
+# 娓呯悊鏃ф棩蹇?sudo journalctl --vacuum-time=7d
 
-# 清理旧备份
-rm /opt/ocr/backups/ocr_db_*.dump
+# 娓呯悊鏃у浠?rm /opt/ocr/backups/ocr_db_*.dump
 ```
 
-### Q10：前端页面空白
-
-**原因**：构建失败或路由配置错误。
-
-**解决方案**：
-
+### Q10锛氬墠绔〉闈㈢┖鐧?
+**鍘熷洜**锛氭瀯寤哄け璐ユ垨璺敱閰嶇疆閿欒銆?
+**瑙ｅ喅鏂规**锛?
 ```bash
-# 检查前端文件
-ls -la /var/www/ocr/
+# 妫€鏌ュ墠绔枃浠?ls -la /var/www/ocr/
 
-# 检查 index.html 是否存在
+# 妫€鏌?index.html 鏄惁瀛樺湪
 cat /var/www/ocr/index.html
 
-# 重新构建
+# 閲嶆柊鏋勫缓
 cd /opt/ocr/frontend
-pnpm build
+npm run build
 sudo cp -r dist/* /var/www/ocr/
 
-# 检查 Nginx 配置
+# 妫€鏌?Nginx 閰嶇疆
 sudo nginx -t
 ```
 
 ---
 
-## 20. 运维命令速查
+## 20. 杩愮淮鍛戒护閫熸煡
 
-### 20.1 服务管理
+### 20.1 鏈嶅姟绠＄悊
 
 ```bash
-# 启动所有服务
-sudo systemctl start postgresql redis-server ocr nginx
+# 鍚姩鎵€鏈夋湇鍔?sudo systemctl start postgresql redis-server ocr nginx
 
-# 停止所有服务
-sudo systemctl stop nginx ocr redis-server postgresql
+# 鍋滄鎵€鏈夋湇鍔?sudo systemctl stop nginx ocr redis-server postgresql
 
-# 重启 OCR 服务
+# 閲嶅惎 OCR 鏈嶅姟
 sudo systemctl restart ocr
 
-# 查看所有服务状态
-sudo systemctl status postgresql redis-server ocr nginx
+# 鏌ョ湅鎵€鏈夋湇鍔＄姸鎬?sudo systemctl status postgresql redis-server ocr nginx
 ```
 
-### 20.2 日志查看
+### 20.2 鏃ュ織鏌ョ湅
 
 ```bash
-# OCR 后端实时日志
+# OCR 鍚庣瀹炴椂鏃ュ織
 tail -f /opt/ocr/logs/uvicorn.log
 
-# Nginx 访问日志
+# Nginx 璁块棶鏃ュ織
 sudo tail -f /var/log/nginx/access.log
 
-# 系统日志
+# 绯荤粺鏃ュ織
 sudo journalctl -f
 ```
 
-### 20.3 GPU 监控
+### 20.3 GPU 鐩戞帶
 
 ```bash
-# GPU 状态
-nvidia-smi
+# GPU 鐘舵€?nvidia-smi
 
-# 持续监控
+# 鎸佺画鐩戞帶
 watch -n 1 nvidia-smi
 
-# GPU 进程
+# GPU 杩涚▼
 nvidia-smi pmon
 ```
 
-### 20.4 数据库操作
-
+### 20.4 鏁版嵁搴撴搷浣?
 ```bash
-# 连接数据库
-psql -h localhost -U ocruser -d ocr_db
+# 杩炴帴鏁版嵁搴?psql -h localhost -U ocruser -d ocr_db
 
-# 备份
+# 澶囦唤
 pg_dump -h localhost -U ocruser -d ocr_db -F c -f backup.dump
 
-# 恢复
+# 鎭㈠
 pg_restore -h localhost -U ocruser -d ocr_db -c backup.dump
 ```
 
-### 20.5 代码更新
+### 20.5 浠ｇ爜鏇存柊
 
 ```bash
 cd /opt/ocr
 
-# 拉取最新代码
-git pull
+# 鎷夊彇鏈€鏂颁唬鐮?git pull
 
-# 更新依赖
+# 鏇存柊渚濊禆
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 重新构建前端
-cd frontend && pnpm build && sudo cp -r dist/* /var/www/ocr/ && cd ..
+# 閲嶆柊鏋勫缓鍓嶇
+cd frontend && npm run build && sudo cp -r dist/* /var/www/ocr/ && cd ..
 
-# 重启服务
+# 閲嶅惎鏈嶅姟
 sudo systemctl restart ocr
 sudo systemctl reload nginx
 ```
 
-### 20.6 快速诊断
-
+### 20.6 蹇€熻瘖鏂?
 ```bash
-# 一键检查所有服务
-echo "=== PostgreSQL ===" && sudo systemctl is-active postgresql
+# 涓€閿鏌ユ墍鏈夋湇鍔?echo "=== PostgreSQL ===" && sudo systemctl is-active postgresql
 echo "=== Redis ===" && sudo systemctl is-active redis-server
 echo "=== OCR ===" && sudo systemctl is-active ocr
 echo "=== Nginx ===" && sudo systemctl is-active nginx
@@ -1528,71 +1389,66 @@ echo "=== API ===" && curl -s http://localhost:8000/api/health
 
 ---
 
-## 附录 A：完整环境变量列表
-
-| 变量名 | 说明 | 示例值 |
+## 闄勫綍 A锛氬畬鏁寸幆澧冨彉閲忓垪琛?
+| 鍙橀噺鍚?| 璇存槑 | 绀轰緥鍊?|
 |--------|------|--------|
-| `DATABASE_URL` | PostgreSQL 连接字符串 | `postgresql+asyncpg://ocruser:password@localhost:5432/ocr_db` |
-| `REDIS_URL` | Redis 连接字符串 | `redis://127.0.0.1:6379/0` |
-| `UPLOAD_DIR` | 上传文件目录 | `/opt/ocr/uploads` |
-| `CACHE_DIR` | 模型缓存目录 | `/opt/ocr/.cache` |
-| `OCR_USE_GPU` | 是否使用 GPU | `true` |
-| `OCR_DEVICE` | OCR 设备 | `gpu:0` |
-| `OCR_LANG` | OCR 语言 | `ch` |
-| `INIT_ARCHIVE_EXCEL_PATH` | 初始导入 Excel 路径 | `/opt/ocr/data/archive.xls` |
-| `INIT_ARCHIVE_BATCH_ID` | 初始导入批次 ID | `init_import` |
+| `DATABASE_URL` | PostgreSQL 杩炴帴瀛楃涓?| `postgresql+asyncpg://ocruser:password@localhost:5432/ocr_db` |
+| `REDIS_URL` | Redis 杩炴帴瀛楃涓?| `redis://127.0.0.1:6379/0` |
+| `UPLOAD_DIR` | 涓婁紶鏂囦欢鐩綍 | `/opt/ocr/uploads` |
+| `CACHE_DIR` | 妯″瀷缂撳瓨鐩綍 | `/opt/ocr/.cache` |
+| `OCR_USE_GPU` | 鏄惁浣跨敤 GPU | `true` |
+| `OCR_DEVICE` | OCR 璁惧 | `gpu:0` |
+| `OCR_LANG` | OCR 璇█ | `ch` |
+| `INIT_ARCHIVE_EXCEL_PATH` | 鍒濆瀵煎叆 Excel 璺緞 | `/opt/ocr/data/archive.xls` |
+| `INIT_ARCHIVE_BATCH_ID` | 鍒濆瀵煎叆鎵规 ID | `init_import` |
 
 ---
 
-## 附录 B：端口使用汇总
-
-| 端口 | 服务 | 协议 | 说明 |
+## 闄勫綍 B锛氱鍙ｄ娇鐢ㄦ眹鎬?
+| 绔彛 | 鏈嶅姟 | 鍗忚 | 璇存槑 |
 |------|------|------|------|
-| 80 | Nginx | TCP | HTTP 入口 |
-| 443 | Nginx | TCP | HTTPS 入口 |
-| 8000 | Uvicorn | TCP | 后端 API |
-| 5432 | PostgreSQL | TCP | 数据库 |
-| 6379 | Redis | TCP | 缓存 |
+| 80 | Nginx | TCP | HTTP 鍏ュ彛 |
+| 443 | Nginx | TCP | HTTPS 鍏ュ彛 |
+| 8000 | Uvicorn | TCP | 鍚庣 API |
+| 5432 | PostgreSQL | TCP | 鏁版嵁搴?|
+| 6379 | Redis | TCP | 缂撳瓨 |
 
 ---
 
-## 附录 C：文件结构
-
+## 闄勫綍 C锛氭枃浠剁粨鏋?
 ```
 /opt/ocr/
-├── .venv/                 # Python 虚拟环境
-├── .cache/                # 模型缓存
-├── .env                   # 环境变量配置
-├── uploads/               # 上传文件目录
-├── logs/                  # 日志目录
-│   ├── uvicorn.log
-│   └── uvicorn.error.log
-├── backups/               # 备份目录
-├── data/                  # 数据文件（如初始导入 Excel）
-├── app/                   # 后端代码
-├── frontend/              # 前端代码
-│   └── dist/              # 前端构建产物
-├── config.py              # 配置文件
-├── requirements.txt       # Python 依赖
-└── init_archive_db.py     # 初始数据导入脚本
+鈹溾攢鈹€ .venv/                 # Python 铏氭嫙鐜
+鈹溾攢鈹€ .cache/                # 妯″瀷缂撳瓨
+鈹溾攢鈹€ .env                   # 鐜鍙橀噺閰嶇疆
+鈹溾攢鈹€ uploads/               # 涓婁紶鏂囦欢鐩綍
+鈹溾攢鈹€ logs/                  # 鏃ュ織鐩綍
+鈹?  鈹溾攢鈹€ uvicorn.log
+鈹?  鈹斺攢鈹€ uvicorn.error.log
+鈹溾攢鈹€ backups/               # 澶囦唤鐩綍
+鈹溾攢鈹€ data/                  # 鏁版嵁鏂囦欢锛堝鍒濆瀵煎叆 Excel锛?鈹溾攢鈹€ app/                   # 鍚庣浠ｇ爜
+鈹溾攢鈹€ frontend/              # 鍓嶇浠ｇ爜
+鈹?  鈹斺攢鈹€ dist/              # 鍓嶇鏋勫缓浜х墿
+鈹溾攢鈹€ config.py              # 閰嶇疆鏂囦欢
+鈹溾攢鈹€ requirements.txt       # Python 渚濊禆
+鈹斺攢鈹€ init_archive_db.py     # 鍒濆鏁版嵁瀵煎叆鑴氭湰
 ```
 
 ---
 
-## 附录 D：参考资料
-
-- [NVIDIA H20 产品页面](https://www.nvidia.com/en-us/data-center/h20/)
-- [CUDA Toolkit 下载](https://developer.nvidia.com/cuda-downloads)
-- [cuDNN 下载](https://developer.nvidia.com/cudnn)
-- [PaddlePaddle 官方文档](https://www.paddlepaddle.org.cn/)
+## 闄勫綍 D锛氬弬鑰冭祫鏂?
+- [NVIDIA H20 浜у搧椤甸潰](https://www.nvidia.com/en-us/data-center/h20/)
+- [CUDA Toolkit 涓嬭浇](https://developer.nvidia.com/cuda-downloads)
+- [cuDNN 涓嬭浇](https://developer.nvidia.com/cudnn)
+- [PaddlePaddle 瀹樻柟鏂囨。](https://www.paddlepaddle.org.cn/)
 - [PaddleOCR GitHub](https://github.com/PaddlePaddle/PaddleOCR)
-- [FastAPI 官方文档](https://fastapi.tiangolo.com/)
-- [PostgreSQL 官方文档](https://www.postgresql.org/docs/)
-- [Redis 官方文档](https://redis.io/docs/)
-- [Nginx 官方文档](https://nginx.org/en/docs/)
+- [FastAPI 瀹樻柟鏂囨。](https://fastapi.tiangolo.com/)
+- [PostgreSQL 瀹樻柟鏂囨。](https://www.postgresql.org/docs/)
+- [Redis 瀹樻柟鏂囨。](https://redis.io/docs/)
+- [Nginx 瀹樻柟鏂囨。](https://nginx.org/en/docs/)
 
 ---
 
-**文档结束**
+**鏂囨。缁撴潫**
 
-> 如有问题，请检查日志或参考 [常见问题排查](#19-常见问题排查) 章节。
+> 濡傛湁闂锛岃妫€鏌ユ棩蹇楁垨鍙傝€?[甯歌闂鎺掓煡](#19-甯歌闂鎺掓煡) 绔犺妭銆?

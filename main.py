@@ -2,6 +2,7 @@ import logging
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
+import sys
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -13,7 +14,14 @@ from app.api.auth_routes import router as auth_router
 from app.api.routes import router as ocr_router
 from app.db.database import init_db
 from app.services.task_queue import start_task_worker, stop_task_worker
-from config import BASE_DIR
+from config import (
+    BASE_DIR,
+    MINIMAX_API_KEY,
+    MINIMAX_BASE_URL,
+    MINIMAX_ENABLED,
+    MINIMAX_MODEL,
+    _mask_secret,
+)
 
 
 logging.basicConfig(
@@ -25,14 +33,33 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info("Initializing database...")
+    logger.info("Starting service bootstrap...")
+    logger.info(
+        "Python runtime: executable=%s, prefix=%s, base_prefix=%s",
+        sys.executable,
+        sys.prefix,
+        sys.base_prefix,
+    )
+    logger.info(
+        "MiniMax config: enabled=%s, base_url=%s, model=%s, api_key=%s",
+        MINIMAX_ENABLED,
+        MINIMAX_BASE_URL,
+        MINIMAX_MODEL,
+        _mask_secret(MINIMAX_API_KEY),
+    )
+    logger.info("Startup checkpoint: init_db begin")
     await init_db()
+    logger.info("Startup checkpoint: init_db complete")
+    logger.info("Startup checkpoint: task worker begin")
     await start_task_worker()
+    logger.info("Startup checkpoint: task worker complete")
     logger.info("Service is ready.")
     try:
         yield
     finally:
+        logger.info("Service shutdown: stopping task worker...")
         await stop_task_worker()
+        logger.info("Service shutdown complete.")
 
 
 app = FastAPI(
