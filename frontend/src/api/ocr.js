@@ -105,6 +105,18 @@ export const importArchiveFromExcel = (filePath, batchId = '') =>
 
 export const deleteArchiveRecords = (params = {}) => api.delete('/archive-records', { params })
 
+export const ensureFolderBatch = (folder) => api.post('/folders/ensure-batch', { folder })
+
 export const getTaskFileUrl = (id) => `/api/ocr/tasks/${id}/file`
 
 export const getTaskThumbnailUrl = (id) => `/api/ocr/tasks/${id}/thumbnail`
+
+export const getTaskPageImageUrl = (id, pageNum) => `/api/ocr/tasks/${id}/pages/${pageNum}/image`
+
+export const getTaskFields = (id) => api.get(`/tasks/${id}/extract-fields`)
+
+export const aiExtractFields = (id, options = {}) =>
+  api.post(`/tasks/${id}/ai-extract-fields`, {
+    include_evidence: options.includeEvidence !== false,
+    persist: !!options.persist,
+  })

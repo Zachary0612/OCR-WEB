@@ -2,8 +2,8 @@
   <div class="mx-auto max-w-7xl px-6 py-6">
     <div class="mb-4 flex items-center justify-between">
       <div>
-        <h1 class="text-xl font-bold text-gray-800">批次分析中心</h1>
-        <p class="text-xs text-gray-500">批次：{{ batchId }}</p>
+        <h1 class="text-xl font-bold text-gray-800">批次智能分析中心</h1>
+        <p class="text-xs text-gray-500">批次标识：{{ batchId }} · 面向批量档案识别结果的智能归并、质量评估与证据追溯</p>
       </div>
       <div class="flex items-center space-x-2">
         <button class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-200" @click="$router.push('/')">
@@ -14,7 +14,7 @@
           :disabled="refreshing || loading"
           @click="reloadWithRecompute"
         >
-          {{ refreshing ? '分析中...' : '重新分析' }}
+          {{ refreshing ? '智能计算中...' : '刷新智能分析' }}
         </button>
       </div>
     </div>
@@ -25,33 +25,33 @@
         :class="activeTab === 'overview' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
         @click="activeTab = 'overview'"
       >
-        概览
+        批次总览
       </button>
       <button
         class="rounded-lg px-3 py-1.5 text-xs font-medium"
         :class="activeTab === 'truth' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
         @click="activeTab = 'truth'"
       >
-        人工核对
+        人工校核
       </button>
       <button
         class="rounded-lg px-3 py-1.5 text-xs font-medium"
         :class="activeTab === 'metrics' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
         @click="activeTab = 'metrics'"
       >
-        质量结果
+        质量评估
       </button>
       <button
         class="rounded-lg px-3 py-1.5 text-xs font-medium"
         :class="activeTab === 'qa' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
         @click="activeTab = 'qa'"
       >
-        知识问答
+        证据问答
       </button>
     </div>
 
     <div v-if="loading" class="rounded-xl border border-gray-200 bg-white px-4 py-10 text-center text-sm text-gray-500">
-      正在加载批次分析数据...
+      正在汇聚批次归并、质量评估与证据问答数据...
     </div>
     <div v-else-if="error" class="rounded-xl border border-red-200 bg-red-50 px-4 py-6 text-sm text-red-600">{{ error }}</div>
 
@@ -67,42 +67,42 @@
       <div v-if="activeTab === 'overview'" class="space-y-4">
         <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
           <div class="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
-            分组数：{{ mergeResult?.summary?.groups_count || 0 }}
+            归并文档组数：{{ mergeResult?.summary?.groups_count || 0 }}
           </div>
           <div class="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
-            文档数：{{ mergeResult?.summary?.documents_count || 0 }}
+            批次材料数：{{ mergeResult?.summary?.documents_count || 0 }}
           </div>
           <div class="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
-            推荐填充率：{{ pct(operationalMetrics?.field_fill_rate?.recommended) }}
+            推荐字段覆盖率：{{ pct(operationalMetrics?.field_fill_rate?.recommended) }}
           </div>
           <div class="rounded-xl border border-gray-200 bg-white px-3 py-3 text-xs text-gray-700">
-            冲突率：{{ pct(operationalMetrics?.conflict_rate) }}
+            字段冲突率：{{ pct(operationalMetrics?.conflict_rate) }}
           </div>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">分组质量摘要</h2>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">批次质量摘要</h2>
           <p class="mb-2 text-xs text-gray-600">
-            平均同文档置信度：{{ pct(operationalMetrics?.avg_same_document_confidence) }}，
-            规则/智能平均一致率：{{ pct(operationalMetrics?.avg_rule_llm_agreement) }}
+            平均同文档归并置信度：{{ pct(operationalMetrics?.avg_same_document_confidence) }}，
+            规则与智能协同一致率：{{ pct(operationalMetrics?.avg_rule_llm_agreement) }}
           </p>
           <p v-if="truthMetrics?.grouping" class="text-xs text-emerald-700">
-            人工核对分组综合分：{{ pct(truthMetrics.grouping.pairwise_f1) }}，
+            人工校核综合得分：{{ pct(truthMetrics.grouping.pairwise_f1) }}，
             任务分配准确率：{{ pct(truthMetrics.grouping.task_assignment_accuracy) }}
           </p>
-          <p v-else class="text-xs text-amber-600">当前尚无人工核对数据，请先在“人工核对”页签补充后再查看质量结果。</p>
+          <p v-else class="text-xs text-amber-600">当前尚未建立人工校核基线，请先在“人工校核”页签补充后再查看准确性评估。</p>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
           <div class="mb-2 flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-gray-800">智能诊断报告</h2>
+            <h2 class="text-sm font-semibold text-gray-800">智能诊断与决策建议</h2>
             <div class="flex items-center space-x-2">
               <button
                 class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-400"
                 :disabled="loadingAiReport"
                 @click="loadAiReport(false)"
               >
-                {{ loadingAiReport ? '生成中...' : '生成报告' }}
+                {{ loadingAiReport ? '生成中...' : '生成诊断' }}
               </button>
               <button
                 class="rounded bg-indigo-100 px-2 py-1 text-[11px] text-indigo-700 hover:bg-indigo-200 disabled:cursor-not-allowed disabled:bg-indigo-50 disabled:text-indigo-300"
@@ -140,11 +140,11 @@
               </div>
             </div>
           </div>
-          <p v-else class="text-xs text-gray-500">点击“生成报告”后，系统会基于本批次的质量结果输出可解释诊断。</p>
+          <p v-else class="text-xs text-gray-500">点击“生成诊断”后，系统将结合归并质量、字段冲突与人工校核情况输出可解释建议。</p>
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">批次分组明细</h2>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">文档归并明细</h2>
           <div class="space-y-2 text-xs">
             <div v-for="group in mergeResult?.groups || []" :key="group.group_id" class="rounded-lg bg-gray-50 px-3 py-2">
               <p class="font-medium text-gray-700">{{ group.group_id }}（置信度 {{ pct(group.same_document_confidence) }}）</p>
@@ -156,17 +156,17 @@
 
       <div v-else-if="activeTab === 'truth'" class="space-y-4">
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">分组核对</h2>
-          <p class="mb-3 text-xs text-gray-500">给每份材料填写分组编号（同一文档填同一个编号，例如 group-A）。</p>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">文档归并校核</h2>
+          <p class="mb-3 text-xs text-gray-500">为每份材料确认其所属文档组，系统将据此评估归并准确率，并为后续字段校核建立可信基线。</p>
           <div class="max-h-72 overflow-auto">
             <table class="w-full text-left text-xs">
               <thead class="sticky top-0 bg-gray-50 text-gray-500">
                 <tr>
-                  <th class="px-2 py-2">材料编号</th>
-                  <th class="px-2 py-2">文件名</th>
-                  <th class="px-2 py-2">预测组</th>
-                  <th class="px-2 py-2">分组编号</th>
-                  <th class="px-2 py-2">操作</th>
+                  <th class="px-2 py-2">任务编号</th>
+                  <th class="px-2 py-2">文件名称</th>
+                  <th class="px-2 py-2">系统建议分组</th>
+                  <th class="px-2 py-2">人工确认分组</th>
+                  <th class="px-2 py-2">材料核验</th>
                 </tr>
               </thead>
               <tbody>
@@ -188,7 +188,7 @@
                       :disabled="verifyingTaskId === Number(item.task_id)"
                       @click="openTask(item.task_id)"
                     >
-                      {{ verifyingTaskId === Number(item.task_id) ? '校验中...' : '查看' }}
+                      {{ verifyingTaskId === Number(item.task_id) ? '打开中...' : '打开材料' }}
                     </button>
                   </td>
                 </tr>
@@ -199,11 +199,12 @@
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
           <div class="mb-2 flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-gray-800">信息核对</h2>
+            <h2 class="text-sm font-semibold text-gray-800">档案要素校核</h2>
             <button class="rounded bg-gray-100 px-2 py-1 text-[11px] text-gray-700 hover:bg-gray-200" @click="addEmptyDocTruth">
-              新增核对条目
+              新增校核条目
             </button>
           </div>
+          <p class="mb-3 text-xs text-gray-500">用于按文档组维护权威档案字段。这里填写的内容会作为本批次的人工校核基线，用于刷新质量评估、支撑模型优化和形成可追溯复核依据。</p>
           <div class="max-h-[420px] space-y-3 overflow-auto">
             <div v-for="doc in documentTruthDraft" :key="`truth-doc-${doc.doc_key}`" class="rounded-lg border border-gray-200 p-3">
               <div class="mb-2 flex items-center justify-between">
@@ -211,7 +212,7 @@
                   v-model="doc.doc_key"
                   type="text"
                   class="rounded border border-gray-200 px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
-                  placeholder="分组编号"
+                  placeholder="文档组编号"
                 />
                 <button class="rounded bg-red-50 px-2 py-1 text-[11px] text-red-600 hover:bg-red-100" @click="removeDocTruth(doc.doc_key)">
                   删除
@@ -236,7 +237,7 @@
               :disabled="savingTruth"
               @click="saveTruth"
             >
-              {{ savingTruth ? '保存中...' : '保存核对并刷新结果' }}
+              {{ savingTruth ? '保存中...' : '保存校核基线并刷新评估' }}
             </button>
           </div>
           <p v-if="truthSaveMessage" class="mt-2 text-xs text-emerald-600">{{ truthSaveMessage }}</p>
@@ -245,7 +246,7 @@
 
       <div v-else-if="activeTab === 'metrics'" class="space-y-4">
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">运营指标（无需人工核对）</h2>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">自动评估指标（无需人工校核）</h2>
           <div class="grid grid-cols-2 gap-2 text-xs text-gray-700 md:grid-cols-4">
             <div class="rounded bg-gray-50 px-2 py-2">规则填充率：{{ pct(operationalMetrics?.field_fill_rate?.rule) }}</div>
             <div class="rounded bg-gray-50 px-2 py-2">智能填充率：{{ pct(operationalMetrics?.field_fill_rate?.llm) }}</div>
@@ -255,8 +256,8 @@
         </div>
 
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">人工核对结果</h2>
-          <p v-if="!truthMetrics" class="text-xs text-amber-600">暂无人工核对结果，请先在“人工核对”页签完成核对信息。</p>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">基于人工校核的准确性评估</h2>
+          <p v-if="!truthMetrics" class="text-xs text-amber-600">暂无人工校核结果，请先在“人工校核”页签完成归并与字段校核。</p>
           <div v-else class="space-y-3">
             <div class="grid grid-cols-2 gap-2 text-xs text-gray-700 md:grid-cols-4">
               <div class="rounded bg-gray-50 px-2 py-2">分组准确率：{{ pct(truthMetrics.grouping?.pairwise_precision) }}</div>
@@ -283,8 +284,8 @@
 
       <div v-else class="space-y-4">
         <div class="rounded-xl border border-gray-200 bg-white px-4 py-3">
-          <h2 class="mb-2 text-sm font-semibold text-gray-800">批次知识问答</h2>
-          <p class="mb-3 text-xs text-gray-500">准确优先：先检索证据，再进行智能回答并做证据一致性校验。</p>
+          <h2 class="mb-2 text-sm font-semibold text-gray-800">批次知识问答与证据追溯</h2>
+          <p class="mb-3 text-xs text-gray-500">准确优先：系统先检索批次证据，再生成回答并进行一致性校验，确保结论可追溯、可复核。</p>
           <div class="mb-3 grid grid-cols-2 gap-2 text-xs text-gray-700 md:grid-cols-4">
             <div class="rounded bg-gray-50 px-2 py-2">帮助率：{{ pct(qaMetrics?.helpful_rate) }}</div>
             <div class="rounded bg-gray-50 px-2 py-2">低证据拒答率：{{ pct(qaMetrics?.insufficient_rate) }}</div>
@@ -296,7 +297,7 @@
               v-model="qaInput"
               type="text"
               class="flex-1 rounded border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-              placeholder="例如：该批次里文号包含“2024”的文件主要讲什么？"
+              placeholder="例如：该批次中 2024 年相关文件主要涉及哪些事项？"
               @keydown.enter.exact.prevent="submitQa"
             />
             <button
@@ -304,7 +305,7 @@
               :disabled="qaSubmitting"
               @click="submitQa"
             >
-              {{ qaSubmitting ? '回答中...' : '发送问题' }}
+              {{ qaSubmitting ? '回答中...' : '发起问答' }}
             </button>
           </div>
           <p v-if="qaError" class="mt-2 text-xs text-red-600">{{ qaError }}</p>
@@ -314,7 +315,7 @@
           正在加载问答历史...
         </div>
         <div v-else-if="qaHistory.length === 0" class="rounded-xl border border-gray-200 bg-white px-4 py-6 text-sm text-gray-500">
-          暂无问答记录，输入问题后会在这里显示答案、证据与反馈状态。
+          暂无问答记录，发起问题后将展示答案、证据链路与反馈状态。
         </div>
 
         <div v-for="item in qaHistory" :key="item.qa_id || (item.generated_at + item.question)" class="rounded-xl border border-gray-200 bg-white px-4 py-3">

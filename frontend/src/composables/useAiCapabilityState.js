@@ -226,9 +226,8 @@ export function useAiCapabilityState() {
       const actionableBatchIds = records
         .map((item) => sanitizeBatchId(item.batch_id))
         .filter((id) => id && !invalidBatchIds.has(id))
-      const actionableSet = new Set(actionableBatchIds)
 
-      if (currentStoredBatchId && actionableSet.has(currentStoredBatchId)) {
+      if (currentStoredBatchId && !invalidBatchIds.has(currentStoredBatchId)) {
         latestBatchId.value = currentStoredBatchId
         rememberLatestBatchId(latestBatchId.value)
         return latestBatchId.value
@@ -242,14 +241,35 @@ export function useAiCapabilityState() {
     return currentStoredBatchId
   }
 
+  function setBatchContext(batchId) {
+    latestBatchId.value = sanitizeBatchId(batchId)
+    if (latestBatchId.value) {
+      invalidBatchIds.delete(latestBatchId.value)
+    }
+    aiServiceAvailable.value = false
+    lastError.value = ''
+    passiveRetryAfter = 0
+    rememberAiRuntimeState({
+      latestBatchId: latestBatchId.value,
+      aiServiceAvailable: false,
+      answerSource: answerSource.value,
+      lastError: '',
+    })
+  }
+
   async function refreshAiCapability(options = {}) {
     const passive = options.passive !== false
+    const requestedBatchId = sanitizeBatchId(options.batchId || '')
     if (passive && Date.now() < passiveRetryAfter) {
       return
     }
 
+    if (requestedBatchId) {
+      setBatchContext(requestedBatchId)
+    }
+
     loading.value = true
-    const batchId = sanitizeBatchId(await resolveLatestBatchId())
+    const batchId = requestedBatchId || sanitizeBatchId(await resolveLatestBatchId())
 
     if (!batchId) {
       aiServiceAvailable.value = false
@@ -367,6 +387,7 @@ export function useAiCapabilityState() {
     lastError,
     capabilityStatus,
     capabilityMessage,
+    setBatchContext,
     refreshAiCapability,
     applyAnswerSource,
     markAiRuntimeAvailable,

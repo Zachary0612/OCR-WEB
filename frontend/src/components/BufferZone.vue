@@ -1,5 +1,5 @@
 <template>
-  <div class="gov-panel overflow-hidden">
+  <div class="gov-panel flex min-h-full flex-col overflow-hidden">
     <div class="border-b px-5 py-4" :class="cc.headerBg">
       <div class="flex items-center justify-between">
         <div class="flex items-center space-x-2">
@@ -24,28 +24,28 @@
       </div>
     </div>
 
-    <div class="p-4">
+    <div class="flex-1 p-6">
       <div
-        class="cursor-pointer rounded-lg border-2 border-dashed p-6 text-center transition-all"
+        class="cursor-pointer rounded-xl border-2 border-dashed px-8 py-16 text-center transition-all"
         :class="dragover ? 'border-[var(--gov-primary)] bg-[var(--gov-primary-soft)]' : 'border-[var(--gov-border)] hover:border-[var(--gov-border-strong)] hover:bg-slate-50'"
         @click="fileInput?.click()"
         @dragover.prevent="dragover = true"
         @dragleave="dragover = false"
         @drop.prevent="handleDrop"
       >
-        <svg class="mx-auto mb-2 h-8 w-8 text-[var(--gov-text-muted)]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4l4 4M2 17l.621 2.485A2 2 0 004.561 21h14.878a2 2 0 001.94-1.515L22 17"/></svg>
-        <p class="text-sm text-[var(--gov-text-muted)]">拖拽材料到这里，或 <span class="font-medium text-[var(--gov-primary)]">点击选择</span></p>
-        <p class="mt-1 text-xs gov-muted">支持 JPG / PNG / PDF，可批量导入文件或本地目录。</p>
+        <svg class="mx-auto mb-3 h-12 w-12 text-[var(--gov-text-muted)]" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path d="M12 16V4m0 0L8 8m4-4l4 4M2 17l.621 2.485A2 2 0 004.561 21h14.878a2 2 0 001.94-1.515L22 17"/></svg>
+        <p class="text-base text-[var(--gov-text-muted)]">拖拽材料到这里，或 <span class="font-medium text-[var(--gov-primary)]">点击选择</span></p>
+        <p class="mt-2 text-sm gov-muted">支持 JPG / PNG / PDF，可批量导入文件或本地目录。</p>
       </div>
 
-      <div class="mt-3 flex flex-wrap gap-2">
-        <button class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50" @click="fileInput?.click()">
+      <div class="mt-5 flex flex-wrap gap-3">
+        <button class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-2.5 text-sm font-medium text-[var(--gov-text)] transition hover:bg-slate-50" @click="fileInput?.click()">
           选择文件
         </button>
-        <button class="rounded-lg border border-[var(--gov-border)] bg-white px-3 py-2 text-xs font-medium text-[var(--gov-text)] transition hover:bg-slate-50" @click="folderInput?.click()">
+        <button class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-2.5 text-sm font-medium text-[var(--gov-text)] transition hover:bg-slate-50" @click="folderInput?.click()">
           选择目录
         </button>
-        <button class="rounded-lg border border-dashed border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-3 py-2 text-xs font-medium text-[var(--gov-text-muted)] transition hover:border-[var(--gov-border-strong)] hover:text-[var(--gov-text)]" @click="toggleViewMode">
+        <button class="rounded-lg border border-dashed border-[var(--gov-border)] bg-[var(--gov-surface-muted)] px-4 py-2.5 text-sm font-medium text-[var(--gov-text-muted)] transition hover:border-[var(--gov-border-strong)] hover:text-[var(--gov-text)]" @click="toggleViewMode">
           {{ isAdvancedView ? '收起高级设置' : '高级设置' }}
         </button>
       </div>

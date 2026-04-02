@@ -6,6 +6,7 @@ const routes = [
   { path: '/search', name: 'Search', component: () => import('./views/Search.vue') },
   { path: '/result/:id', name: 'Result', component: () => import('./views/Result.vue'), props: true },
   { path: '/batch-insights/:batchId', name: 'BatchInsights', component: () => import('./views/BatchInsights.vue'), props: true },
+  { path: '/field-extraction', name: 'FieldExtraction', component: () => import('./views/FieldExtraction.vue') },
   { path: '/login', name: 'Login', component: () => import('./views/Login.vue'), meta: { public: true } },
   { path: '/register', name: 'Register', component: () => import('./views/Register.vue'), meta: { public: true } },
   { path: '/admin/review', name: 'AdminReview', component: () => import('./views/AdminReview.vue'), meta: { requiresAdmin: true } },

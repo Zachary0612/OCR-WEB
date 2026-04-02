@@ -2,7 +2,7 @@
   <div class="flex h-screen flex-col overflow-hidden bg-gray-50">
     <div class="flex flex-shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 py-2">
       <div class="flex min-w-0 items-center space-x-3">
-        <button class="rounded p-1 transition hover:bg-gray-100" title="返回" @click="$router.push('/')">
+        <button class="rounded p-1 transition hover:bg-gray-100" title="返回" @click="goBack">
           <svg class="h-5 w-5 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M15 19l-7-7 7-7" /></svg>
         </button>
         <div class="min-w-0">
@@ -39,7 +39,7 @@
           当前状态：{{ statusLabel(task?.status) }}
         </div>
         <div class="mt-5 flex justify-center gap-3">
-          <button class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-2 text-sm text-[var(--gov-text)] hover:bg-slate-50" @click="router.push('/')">
+          <button class="rounded-lg border border-[var(--gov-border)] bg-white px-4 py-2 text-sm text-[var(--gov-text)] hover:bg-slate-50" @click="goBack">
             返回工作台
           </button>
         </div>
@@ -56,7 +56,7 @@
           {{ task?.error_message || '当前记录未能生成可展示的识别结果，请稍后重试或重新发起处理。' }}
         </p>
         <div class="mt-5 flex justify-center gap-3">
-          <button class="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm text-red-700 hover:bg-red-100" @click="router.push('/')">
+          <button class="rounded-lg border border-red-200 bg-white px-4 py-2 text-sm text-red-700 hover:bg-red-100" @click="goBack">
             返回工作台
           </button>
         </div>
@@ -64,19 +64,34 @@
     </div>
 
     <div v-else class="flex min-h-0 flex-1">
-      <aside v-if="folderPath" class="flex w-56 flex-shrink-0 flex-col overflow-hidden border-r border-slate-800 bg-slate-950">
-        <div class="border-b border-slate-800 px-3 py-2 text-xs font-medium text-slate-300">{{ folderLabel }}</div>
-        <div class="flex-1 overflow-y-auto">
+      <aside v-if="folderPath" class="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-slate-50">
+        <div class="border-b border-gray-200 bg-white px-4 py-3">
+          <p class="truncate text-sm font-semibold text-slate-800">{{ folderLabel }}</p>
+          <p class="mt-1 text-xs text-slate-500">{{ folderTasks.length }} 份同目录材料</p>
+        </div>
+        <div v-if="folderLoading" class="flex flex-1 items-center justify-center text-xs text-slate-500">
+          目录加载中...
+        </div>
+        <div v-else-if="!folderTasks.length" class="flex flex-1 items-center justify-center px-4 text-center text-xs leading-6 text-slate-400">
+          当前目录暂无可展示材料
+        </div>
+        <div v-else class="flex-1 space-y-2 overflow-y-auto p-2">
           <button
             v-for="folderTask in folderTasks"
             :key="folderTask.id"
-            class="flex w-full items-center border-b border-slate-900 px-3 py-2 text-left transition"
-            :class="String(folderTask.id) === String(props.id) ? 'bg-blue-500/15 text-blue-200' : 'text-slate-300 hover:bg-slate-900'"
+            class="flex w-full items-start gap-3 rounded-xl border px-3 py-3 text-left transition"
+            :class="String(folderTask.id) === String(props.id) ? 'border-blue-200 bg-blue-50 shadow-sm' : 'border-transparent bg-white hover:border-slate-200 hover:bg-slate-50'"
             @click="switchTask(folderTask.id)"
           >
+            <img :src="getTaskThumbnailUrl(folderTask.id)" class="h-14 w-11 flex-shrink-0 rounded border border-slate-200 bg-white object-cover" />
             <div class="min-w-0 flex-1">
-              <div class="truncate text-xs font-medium">{{ folderTask.filename }}</div>
-              <div class="text-[10px] text-slate-500">{{ formatTime(folderTask.created_at) }}</div>
+              <div class="line-clamp-2 text-xs font-medium text-slate-700">{{ folderTask.filename }}</div>
+              <div class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                <span class="rounded px-1.5 py-0.5" :class="statusClass(folderTask.status)">
+                  {{ statusLabel(folderTask.status) }}
+                </span>
+                <span>{{ formatTime(folderTask.updated_at || folderTask.created_at) }}</span>
+              </div>
             </div>
           </button>
         </div>
@@ -85,9 +100,9 @@
       <section class="flex w-[42%] flex-shrink-0 flex-col border-r border-gray-200 bg-white">
         <div class="border-b border-gray-100 px-3 py-2 text-xs font-medium text-gray-500">原始文件预览</div>
         <div class="preview-container relative flex flex-1 items-start justify-center overflow-auto bg-gray-50 p-3">
-          <iframe v-if="isPdf" :src="fileUrl" class="h-full w-full min-h-[560px] rounded border-0 shadow" />
+          <iframe v-if="isPdf && pdfImgFailed" :src="fileUrl" class="h-full w-full rounded border-0" />
           <div v-else class="relative inline-block">
-            <img :src="fileUrl" class="max-w-full rounded shadow" ref="previewImg" @load="onImgLoad" />
+            <img :src="previewImageUrl" class="max-w-full rounded shadow" ref="previewImg" @load="onImgLoad" @error="onImgError" />
             <svg
               v-if="imgW && imgH"
               class="pointer-events-none absolute left-0 top-0"
@@ -142,6 +157,9 @@
             </button>
             <button class="rounded px-3 py-1 text-xs font-medium transition" :class="activeTab === 'json' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100'" @click="activeTab = 'json'">
               结构数据
+            </button>
+            <button class="rounded px-3 py-1 text-xs font-medium transition" :class="activeTab === 'fields' ? 'bg-blue-600 text-white' : 'text-gray-500 hover:bg-gray-100'" @click="activeTab = 'fields'">
+              字段提取
             </button>
           </div>
           <div class="flex items-center space-x-1">
@@ -261,7 +279,7 @@
                     class="mb-3 overflow-hidden rounded-lg border border-gray-200 bg-slate-50"
                     :style="cropFrameStyle(item)"
                   >
-                    <img :src="fileUrl" class="pointer-events-none max-w-none select-none" :style="cropImageStyle(item)" />
+                    <img :src="previewImageUrl" class="pointer-events-none max-w-none select-none" :style="cropImageStyle(item)" />
                   </div>
                   <p v-if="itemBodyText(item)" class="whitespace-pre-wrap text-sm leading-6 text-gray-700">{{ itemBodyText(item) }}</p>
                   <p v-else-if="item.type === 'seal'" class="text-xs tracking-wide text-gray-400">印章区域</p>
@@ -270,6 +288,100 @@
                 </template>
               </div>
             </template>
+          </div>
+        </div>
+
+        <div v-else-if="activeTab === 'fields'" class="flex-1 overflow-y-auto px-5 py-4">
+          <div class="mb-4 flex items-center justify-between">
+            <div>
+              <h3 class="text-sm font-semibold text-gray-800">档案字段提取</h3>
+              <p class="mt-0.5 text-xs text-gray-400">基于识别结果自动提取关键归档字段，可手动修正</p>
+            </div>
+            <button
+              class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition"
+              :class="aiLoading ? 'bg-indigo-50 text-indigo-400' : 'bg-indigo-600 text-white hover:bg-indigo-700'"
+              :disabled="aiLoading || task?.status !== 'done'"
+              @click="runAiExtraction"
+            >
+              <svg v-if="aiLoading" class="h-3.5 w-3.5 animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16 8 8 0 008-8h-4" /></svg>
+              <svg v-else class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+              {{ aiLoading ? '提取中…' : 'AI 智能提取' }}
+            </button>
+          </div>
+
+          <div v-if="fieldsLoading" class="flex items-center justify-center py-12 text-sm text-gray-400">
+            <svg class="mr-2 h-5 w-5 animate-spin" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16 8 8 0 008-8h-4" /></svg>
+            正在提取字段…
+          </div>
+
+          <div v-else-if="fieldsError" class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-700">
+            {{ fieldsError }}
+          </div>
+
+          <div v-else-if="task?.status !== 'done'" class="flex items-center justify-center py-12 text-sm text-gray-400">
+            任务完成后可提取字段信息
+          </div>
+
+          <div v-else class="space-y-3">
+            <div v-if="aiFields" class="mb-3 flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 px-3 py-2">
+              <svg class="h-4 w-4 flex-shrink-0 text-green-600" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span class="text-xs text-green-700">已完成 AI 智能提取，字段已自动择优合并</span>
+            </div>
+
+            <div
+              v-for="field in FIELD_LABELS"
+              :key="field.key"
+              class="rounded-xl border transition"
+              :class="fieldHasConflict(field.key) ? 'border-amber-200 bg-amber-50/50' : 'border-gray-100 bg-white hover:border-gray-200'"
+            >
+              <div class="flex items-start gap-3 px-4 py-3">
+                <div class="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-xs font-bold" :class="fieldHasConflict(field.key) ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'">
+                  {{ field.icon }}
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-medium text-gray-500">{{ field.key }}</span>
+                    <div class="flex items-center gap-1">
+                      <span v-if="fieldHasConflict(field.key)" class="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">有差异</span>
+                      <span v-else-if="aiFields && fieldDisplayValue(field.key)" class="rounded bg-green-100 px-1.5 py-0.5 text-[10px] font-medium text-green-600">已确认</span>
+                      <button
+                        v-if="editingFieldKey !== field.key && task?.status === 'done'"
+                        class="rounded px-1.5 py-0.5 text-[10px] text-gray-400 hover:bg-gray-100 hover:text-blue-600"
+                        @click.stop="startFieldEdit(field.key)"
+                      >编辑</button>
+                    </div>
+                  </div>
+
+                  <template v-if="editingFieldKey === field.key">
+                    <textarea
+                      v-model="editingFieldValue"
+                      rows="2"
+                      class="mt-1.5 w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-100"
+                    />
+                    <div class="mt-1.5 flex items-center justify-end gap-2">
+                      <button class="rounded bg-gray-100 px-3 py-1 text-xs text-gray-600 hover:bg-gray-200" @click="cancelFieldEdit">取消</button>
+                      <button class="rounded bg-blue-600 px-3 py-1 text-xs text-white hover:bg-blue-700" @click="saveFieldEdit(field.key)">保存</button>
+                    </div>
+                  </template>
+
+                  <template v-else>
+                    <p class="mt-1 text-sm leading-6 text-gray-800" :class="{ 'italic text-gray-300': !fieldDisplayValue(field.key) }">
+                      {{ fieldDisplayValue(field.key) || '未提取到' }}
+                    </p>
+                  </template>
+
+                  <div v-if="fieldHasConflict(field.key)" class="mt-2 space-y-1 border-t border-amber-100 pt-2">
+                    <p class="text-[11px] text-gray-500"><span class="font-medium text-gray-600">规则：</span>{{ fieldConflicts[field.key]?.rule || '—' }}</p>
+                    <p class="text-[11px] text-gray-500"><span class="font-medium text-indigo-600">AI：</span>{{ fieldConflicts[field.key]?.llm || '—' }}</p>
+                    <p v-if="fieldConflicts[field.key]?.evidence" class="text-[11px] italic text-gray-400">依据：{{ fieldConflicts[field.key].evidence }}</p>
+                  </div>
+
+                  <p v-else-if="fieldEvidence[field.key]" class="mt-1 text-[11px] italic text-gray-400">
+                    依据：{{ fieldEvidence[field.key] }}
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -286,9 +398,10 @@
 </template>
 
 <script setup>
-import { computed, nextTick, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { aiExtractFields, getTaskFields, getTaskPageImageUrl, getTaskThumbnailUrl } from '../api/ocr.js'
 import EditableTable from '../components/EditableTable.vue'
 import { useResultViewState } from '../composables/useResultViewState.js'
 
@@ -301,6 +414,14 @@ const props = defineProps({
 
 const router = useRouter()
 const route = useRoute()
+
+function goBack() {
+  if (window.history.length > 1) {
+    router.back()
+  } else {
+    router.push('/')
+  }
+}
 
 const taskIdRef = computed(() => props.id)
 const {
@@ -358,6 +479,14 @@ const {
   router,
 })
 
+const pendingActiveKey = ref('')
+const pdfImgFailed = ref(false)
+const previewImageUrl = computed(() => (isPdf.value ? getTaskPageImageUrl(props.id, pageNum.value) : fileUrl.value))
+
+function onImgError() {
+  if (isPdf.value) pdfImgFailed.value = true
+}
+
 
 const currentPreviewItems = computed(() => buildPreviewItems(currentPage.value, pageNum.value - 1))
 const allItems = computed(() =>
@@ -375,6 +504,110 @@ const allItems = computed(() =>
 )
 const isTaskProcessing = computed(() => ['pending', 'processing'].includes(String(task.value?.status || '')))
 const isTaskFailed = computed(() => String(task.value?.status || '') === 'failed')
+
+const FIELD_LABELS = [
+  { key: '档号', icon: '#' },
+  { key: '文号', icon: '§' },
+  { key: '题名', icon: 'T' },
+  { key: '责任者', icon: '人' },
+  { key: '日期', icon: '日' },
+  { key: '页数', icon: '页' },
+  { key: '密级', icon: '密' },
+  { key: '备注', icon: '注' },
+]
+const ruleFields = ref({})
+const aiFields = ref(null)
+const recommendedFields = ref(null)
+const fieldConflicts = ref({})
+const fieldEvidence = ref({})
+const fieldsLoading = ref(false)
+const aiLoading = ref(false)
+const fieldsError = ref('')
+const editingFieldKey = ref('')
+const editingFieldValue = ref('')
+
+async function loadRuleFields() {
+  if (task.value?.status !== 'done') return
+  fieldsLoading.value = true
+  fieldsError.value = ''
+  try {
+    const { data } = await getTaskFields(props.id)
+    ruleFields.value = data.fields || {}
+  } catch (err) {
+    fieldsError.value = err.response?.data?.detail || '字段提取失败'
+  } finally {
+    fieldsLoading.value = false
+  }
+}
+
+async function runAiExtraction() {
+  aiLoading.value = true
+  fieldsError.value = ''
+  try {
+    const { data } = await aiExtractFields(props.id)
+    ruleFields.value = data.rule_fields || {}
+    aiFields.value = data.llm_fields || {}
+    recommendedFields.value = data.recommended_fields || {}
+    fieldConflicts.value = data.conflicts || {}
+    fieldEvidence.value = (data.llm_fields || {}).evidence || {}
+    showToast('AI 智能提取完成')
+  } catch (err) {
+    const detail = err.response?.data?.detail || ''
+    fieldsError.value = detail.includes('disabled') || detail.includes('not configured')
+      ? '智能提取服务暂未启用，请联系管理员检查本地配置后重试。'
+      : detail || 'AI 提取失败'
+  } finally {
+    aiLoading.value = false
+  }
+}
+
+function fieldDisplayValue(key) {
+  if (recommendedFields.value) return recommendedFields.value[key] || ''
+  return ruleFields.value[key] || ''
+}
+
+function fieldHasConflict(key) {
+  return !!fieldConflicts.value[key]
+}
+
+function startFieldEdit(key) {
+  editingFieldKey.value = key
+  editingFieldValue.value = fieldDisplayValue(key)
+}
+
+function cancelFieldEdit() {
+  editingFieldKey.value = ''
+  editingFieldValue.value = ''
+}
+
+function saveFieldEdit(key) {
+  if (recommendedFields.value) {
+    recommendedFields.value[key] = editingFieldValue.value
+  } else {
+    ruleFields.value[key] = editingFieldValue.value
+  }
+  if (fieldConflicts.value[key]) {
+    delete fieldConflicts.value[key]
+  }
+  editingFieldKey.value = ''
+  editingFieldValue.value = ''
+  showToast('已保存')
+}
+
+watch(() => activeTab.value, (tab) => {
+  if (tab === 'fields' && !Object.keys(ruleFields.value).length && task.value?.status === 'done') {
+    loadRuleFields()
+  }
+})
+
+watch(() => props.id, () => {
+  ruleFields.value = {}
+  aiFields.value = null
+  recommendedFields.value = null
+  fieldConflicts.value = {}
+  fieldEvidence.value = {}
+  fieldsError.value = ''
+})
 
 function isStructuredTextRegion(type) {
   return !['table', 'seal', 'figure', 'image', 'chart'].includes(String(type || 'text'))
@@ -524,7 +757,7 @@ function buildPageItems(page, pageIndex) {
       const primaryRegionIndex = sourceIndices.length === 1 ? sourceIndices[0] : undefined
       const html = resolveTableHtml(rawRegion)
       const tableData = rawRegion.type === 'table' ? resolveTableData(rawRegion, html) : (Array.isArray(rawRegion.table_data) ? rawRegion.table_data : [['']])
-      const regionContent = rawRegion.type === 'seal' ? '' : (rawRegion.content || '')
+      const regionContent = rawRegion.content || ''
       const displayLines = isStructuredTextRegion(rawRegion.type)
         ? buildFormattedLineItems(rawRegion.region_lines, {
           keyPrefix: `page-${pageIndex}-region-${sourceIndices.join('-') || regionIndex}-line`,
@@ -725,13 +958,21 @@ function normalizeSealDisplayContent(content) {
   return joined
 }
 
-function sealDisplayText(content) {
-  return ''
+function sealDisplayText(item) {
+  const direct = normalizeSealDisplayContent(item?.content)
+  if (direct) return direct
+
+  return normalizeSealDisplayContent(
+    (item?.region_lines || [])
+      .map((line) => String(line?.text || '').trim())
+      .filter(Boolean)
+      .join('\n')
+  )
 }
 
 function itemBodyText(item) {
   if (item?.type === 'seal') {
-    return sealDisplayText(item?.content)
+    return sealDisplayText(item)
   }
   return String(item?.content || '')
 }
@@ -1054,7 +1295,7 @@ function regionRect(item) {
 }
 
 function showRegionPreview(item) {
-  return !isPdf.value && ['seal', 'figure', 'image', 'chart'].includes(item.type) && regionRect(item).length >= 4 && natW.value && natH.value
+  return ['seal', 'figure', 'image', 'chart'].includes(item.type) && regionRect(item).length >= 4 && natW.value && natH.value
 }
 
 function cropPreviewMetrics(item) {
@@ -1117,10 +1358,14 @@ function onImgLoad() {
 }
 
 function selectItem(item) {
+  const targetKey = overlayTargetKey(item)
   if (item._pageIdx !== undefined && item._pageIdx + 1 !== pageNum.value) {
+    pendingActiveKey.value = targetKey
     pageNum.value = item._pageIdx + 1
+    return
   }
-  activeKey.value = overlayTargetKey(item)
+  pendingActiveKey.value = ''
+  activeKey.value = targetKey
 }
 
 watch(activeKey, async (key) => {
@@ -1128,7 +1373,21 @@ watch(activeKey, async (key) => {
   regionRefs.value[key]?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
 })
 
-watch(pageNum, () => {
+watch(previewImageUrl, () => {
+  imgW.value = 0
+  imgH.value = 0
+  natW.value = 0
+  natH.value = 0
+  pdfImgFailed.value = false
+})
+
+watch(pageNum, async () => {
+  await nextTick()
+  if (pendingActiveKey.value) {
+    activeKey.value = pendingActiveKey.value
+    pendingActiveKey.value = ''
+    return
+  }
   activeKey.value = ''
 })
 </script>

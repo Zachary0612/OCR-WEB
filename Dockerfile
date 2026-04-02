@@ -1,4 +1,4 @@
-FROM registry.baidubce.com/paddlepaddle/paddle:3.0.0-gpu-cuda12.3-cudnn9.0-trt8.6
+FROM ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddle:3.3.0-gpu-cuda12.6-cudnn9.5
 
 WORKDIR /app
 
@@ -32,8 +32,13 @@ COPY app/ ./app/
 COPY static/ ./static/
 COPY templates/ ./templates/
 COPY init_archive_db.py ./
+COPY scripts/ ./scripts/
 
 RUN mkdir -p /app/uploads /app/.cache /app/logs /app/static/vue
+
+# 预下载全部 3 个 OCR 模型（PP-OCRv5 / PP-StructureV3 / PaddleOCR-VL-1.5）
+# 模型文件会缓存在 /app/.cache 中，使镜像可完全离线运行
+RUN python scripts/prefetch_models.py
 
 EXPOSE 8000
 

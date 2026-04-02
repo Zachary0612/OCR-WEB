@@ -94,8 +94,15 @@ export function useResultViewState({ taskId, route, router }) {
   const natW = ref(0)
   const natH = ref(0)
 
+  const inferFolderPath = (filePath = '') => {
+    const normalized = String(filePath || '')
+    if (!normalized) return ''
+    const slashIndex = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'))
+    return slashIndex >= 0 ? normalized.slice(0, slashIndex) : ''
+  }
+
   const fileUrl = computed(() => getTaskFileUrl(taskId.value))
-  const folderPath = computed(() => String(route.query.folder || ''))
+  const folderPath = computed(() => String(route.query.folder || '') || inferFolderPath(task.value?.file_path || ''))
   const folderLabel = computed(() => {
     const normalized = folderPath.value.replace(/\\/g, '/')
     return normalized.split('/').filter(Boolean).pop() || folderPath.value
@@ -162,7 +169,7 @@ export function useResultViewState({ taskId, route, router }) {
     folderLoading.value = true
     try {
       const { data } = await getTasks(1, 500, folderPath.value)
-      folderTasks.value = [...(data.tasks || [])].reverse()
+      folderTasks.value = data.tasks || []
     } catch (_) {
       folderTasks.value = []
     } finally {
@@ -187,7 +194,8 @@ export function useResultViewState({ taskId, route, router }) {
 
   const switchTask = (nextTaskId) => {
     if (String(nextTaskId) === String(taskId.value)) return
-    router.push(`/result/${nextTaskId}?folder=${encodeURIComponent(folderPath.value)}`)
+    const folderQuery = folderPath.value ? `?folder=${encodeURIComponent(folderPath.value)}` : ''
+    router.push(`/result/${nextTaskId}${folderQuery}`)
   }
 
   const copyRegion = (item) => {

@@ -608,7 +608,7 @@ def _seal_content_from_lines(layout_bbox: list[float], page_lines: list[dict], r
             continue
         cx, cy = _line_center(poly)
         overlap_ratio = _rect_intersection_area(layout_bbox, line_rect) / (_rect_area(line_rect) or 1.0)
-        if _rect_contains_point(layout_bbox, cx, cy) or overlap_ratio >= 0.55:
+        if _rect_contains_point(layout_bbox, cx, cy) or overlap_ratio >= 0.26:
             candidates.append((text, overlap_ratio, line_rect))
 
     if not candidates:

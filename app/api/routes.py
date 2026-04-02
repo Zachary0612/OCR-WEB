@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import require_auth
 from app.core.path_security import PathSecurityError, ensure_allowed_path
-from app.core.preview import build_thumbnail
+from app.core.preview import build_pdf_page_preview, build_thumbnail
 from app.core.redis_cache import (
     LIST_TTL,
     SEARCH_TTL,
@@ -330,7 +330,8 @@ async def export_archive_records(
     except Exception as error:  # noqa: BLE001
         if os.path.exists(temp_path):
             os.unlink(temp_path)
-        raise HTTPException(status_code=500, detail=f"Export failed: {error}") from error
+        logger.exception("Export archive records failed.")
+        raise HTTPException(status_code=500, detail="Export failed.") from error
 
 
 @router.get("/archive-records")
@@ -372,14 +373,19 @@ async def import_archive_from_excel(body: dict, db: AsyncSession = Depends(get_d
     if not file_path:
         raise HTTPException(status_code=400, detail="file_path is required.")
     try:
-        count = await import_from_excel(db, file_path, batch_id)
+        safe_path = ensure_allowed_path(file_path, expect_file=True)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+    try:
+        count = await import_from_excel(db, str(safe_path), batch_id)
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except (ImportError, ValueError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except Exception as error:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Import failed: {error}") from error
-    return {"imported": count, "file_path": file_path}
+        logger.exception("Import archive from excel failed.")
+        raise HTTPException(status_code=500, detail="Import failed.") from error
+    return {"imported": count, "file_path": str(safe_path)}
 
 
 @router.delete("/archive-records")
@@ -469,12 +475,109 @@ async def list_folders(db: AsyncSession = Depends(get_db)):
             folders[folder]["last_time"] = created_at
             folders[folder]["latest_task_id"] = task_id
 
+    # Collect batch_ids per folder from archive_records
+    try:
+        archive_rows = (
+            await db.execute(
+                sa_text(
+                    "SELECT DISTINCT batch_folder, batch_id "
+                    "FROM archive_records "
+                    "WHERE batch_id IS NOT NULL AND batch_id != ''"
+                )
+            )
+        ).fetchall()
+        folder_batches: dict[str, list[str]] = {}
+        for batch_folder, batch_id in archive_rows:
+            if batch_folder:
+                norm = str(batch_folder).rstrip("/\\")
+                folder_batches.setdefault(norm, [])
+                if batch_id not in folder_batches[norm]:
+                    folder_batches[norm].append(batch_id)
+        for folder_data in folders.values():
+            folder_data["batch_ids"] = folder_batches.get(folder_data["folder"], [])
+    except Exception:  # noqa: BLE001
+        for folder_data in folders.values():
+            folder_data["batch_ids"] = []
+
     from datetime import datetime, timezone
 
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
     result = sorted(folders.values(), key=lambda item: item["last_time"] or _epoch, reverse=True)
     cache_set(cache_key, result, LIST_TTL)
     return result
+
+
+@router.post("/folders/ensure-batch")
+async def ensure_folder_batch(body: dict, db: AsyncSession = Depends(get_db)):
+    folder = str(body.get("folder", "")).strip()
+    if not folder:
+        raise HTTPException(status_code=400, detail="Missing folder.")
+
+    # Find archive_records for this folder that already have a batch_id
+    existing = (
+        await db.execute(
+            sa_text(
+                "SELECT DISTINCT batch_id FROM archive_records "
+                "WHERE batch_folder = :folder AND batch_id IS NOT NULL AND batch_id != ''"
+            ).bindparams(folder=folder)
+        )
+    ).scalars().all()
+
+    if existing:
+        return {"batch_id": existing[0], "created": False}
+
+    # Find all task_ids in this folder that have archive_records with empty batch_id
+    rows = (
+        await db.execute(
+            sa_text(
+                "SELECT id FROM archive_records "
+                "WHERE batch_folder = :folder AND (batch_id IS NULL OR batch_id = '')"
+            ).bindparams(folder=folder)
+        )
+    ).scalars().all()
+
+    if not rows:
+        # No archive records at all — create them from tasks in this folder
+        base = folder.rstrip("/\\")
+        task_rows = (
+            await db.execute(
+                sa_text(
+                    "SELECT id, file_path, full_text, result_json, page_count, status "
+                    "FROM ocr_tasks WHERE status = 'done' AND ("
+                    "  file_path LIKE :pat_fwd OR file_path LIKE :pat_back"
+                    ")"
+                ).bindparams(pat_fwd=base + "/%", pat_back=base + "\\%")
+            )
+        ).fetchall()
+        if not task_rows:
+            raise HTTPException(status_code=404, detail="No completed tasks found in this folder.")
+
+        import time, random
+        batch_id = f"batch_{int(time.time())}_{random.randbytes(3).hex()}"
+        for task_id, file_path, full_text, result_json, page_count, _status in task_rows:
+            fields = extract_fields(
+                Path(file_path).name,
+                full_text or "",
+                result_json,
+                page_count or 0,
+            )
+            await save_archive_record(db, task_id, batch_id, folder, fields)
+
+        invalidate_lists()
+        return {"batch_id": batch_id, "created": True}
+
+    # Archive records exist but without batch_id — assign one
+    import time, random
+    batch_id = f"batch_{int(time.time())}_{random.randbytes(3).hex()}"
+    await db.execute(
+        sa_text(
+            "UPDATE archive_records SET batch_id = :bid "
+            "WHERE batch_folder = :folder AND (batch_id IS NULL OR batch_id = '')"
+        ).bindparams(bid=batch_id, folder=folder)
+    )
+    await db.commit()
+    invalidate_lists()
+    return {"batch_id": batch_id, "created": True}
 
 
 @router.post("/tasks/progress", response_model=TaskProgressResponse)
@@ -612,6 +715,17 @@ async def update_task(task_id: int, body: dict, db: AsyncSession = Depends(get_d
         )
     invalidate_task(task_id)
     return _task_payload(task)
+
+
+@router.get("/tasks/{task_id}/extract-fields")
+async def get_task_extracted_fields(task_id: int, db: AsyncSession = Depends(get_db)):
+    task = await get_task_detail(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.status != "done":
+        raise HTTPException(status_code=409, detail="Field extraction requires a completed task.")
+    fields = extract_fields(task.filename, task.full_text or "", task.result_json, task.page_count)
+    return {"task_id": task_id, "fields": fields}
 
 
 @router.post("/tasks/{task_id}/ai-extract-fields", response_model=AIExtractFieldsResponse)
@@ -917,3 +1031,27 @@ async def get_task_thumbnail(task_id: int, db: AsyncSession = Depends(get_db)):
         _raise_bad_request(error)
 
     return Response(content=build_thumbnail(file_path), media_type="image/png")
+
+
+@router.get("/tasks/{task_id}/pages/{page_num}/image")
+async def get_task_page_image(task_id: int, page_num: int, db: AsyncSession = Depends(get_db)):
+    task = await get_task_detail(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    try:
+        file_path = ensure_allowed_path(task.file_path, expect_file=True)
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)
+
+    if file_path.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="Task file is not a PDF.")
+
+    if page_num < 1:
+        raise HTTPException(status_code=400, detail="page_num must be greater than 0.")
+
+    try:
+        return Response(content=build_pdf_page_preview(file_path, page_num), media_type="image/png")
+    except IndexError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except Exception as error:  # noqa: BLE001
+        _raise_bad_request(error)

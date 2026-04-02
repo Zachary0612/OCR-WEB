@@ -32,6 +32,23 @@ def _pdf_thumbnail(path: Path) -> Image.Image:
         document.close()
 
 
+def build_pdf_page_preview(file_path: str | Path, page_num: int, scale: float = 2.0) -> bytes:
+    path = Path(file_path)
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not installed.")
+
+    page_index = max(0, int(page_num) - 1)
+    document = fitz.open(path)
+    try:
+        if page_index >= document.page_count:
+            raise IndexError("PDF page index out of range.")
+        page = document.load_page(page_index)
+        pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        return pix.tobytes("png")
+    finally:
+        document.close()
+
+
 def build_thumbnail(file_path: str | Path, max_size: tuple[int, int] = (320, 240)) -> bytes:
     path = Path(file_path)
 

@@ -82,7 +82,7 @@ VUE_DIST = BASE_DIR / "static" / "vue"
 async def global_exception_handler(request: Request, exc: Exception):
     traceback_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
     logger.error("Unhandled exception on %s:\n%s", request.url.path, "".join(traceback_lines))
-    return JSONResponse(status_code=500, content={"detail": str(exc)})
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
 
 
 @app.get("/api/health")
@@ -105,6 +105,9 @@ async def old_index(request: Request):
 
 @app.get("/{full_path:path}")
 async def serve_vue(request: Request, full_path: str):
+    if full_path == "api" or full_path.startswith("api/"):
+        return JSONResponse(status_code=404, content={"detail": "API endpoint not found."})
+
     if full_path:
         candidate = VUE_DIST / full_path
         if candidate.is_file():
