@@ -1,0 +1,23 @@
+flowchart LR
+  UI["Vue Frontend (Workbench / Result / Batch Insights)"] --> API["API Layer (interfaces/api/v1)"]
+  API --> APP["Application Workflows (application/workflows)"]
+
+  APP --> D1["Ingestion Domain"]
+  APP --> D2["OCR Domain"]
+  APP --> D3["Field Extraction Domain"]
+  APP --> D4["Archive & Search Domain"]
+  APP --> D5["Batch Intelligence Domain"]
+  APP --> D6["QA & Evaluation Domain"]
+  APP --> D7["Auth Domain"]
+
+  D1 --> DB["PostgreSQL"]
+  D1 --> QUEUE["Redis Queue"]
+  D2 --> OCRRT["Local OCR Runtime"]
+  D3 --> OCRRT
+  D4 --> FS["Local File Storage"]
+  D5 --> CACHE["Redis Cache"]
+  D6 --> CACHE
+
+  D3 --> EXT["Optional External AI Provider"]
+  D5 --> EXT
+  D6 --> EXT

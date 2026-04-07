@@ -1,15 +1,20 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthState } from './composables/useAuthState.js'
+import { LoginView, RegisterView, AdminReviewView } from './features/auth/index.js'
+import { BatchInsightsView } from './features/batch-insights/index.js'
+import { FieldExtractionView, ResultView } from './features/result/index.js'
+import { SearchView } from './features/search/index.js'
+import { HomeView } from './features/workbench/index.js'
 
 const routes = [
-  { path: '/', name: 'Home', component: () => import('./views/Home.vue') },
-  { path: '/search', name: 'Search', component: () => import('./views/Search.vue') },
-  { path: '/result/:id', name: 'Result', component: () => import('./views/Result.vue'), props: true },
-  { path: '/batch-insights/:batchId', name: 'BatchInsights', component: () => import('./views/BatchInsights.vue'), props: true },
-  { path: '/field-extraction', name: 'FieldExtraction', component: () => import('./views/FieldExtraction.vue') },
-  { path: '/login', name: 'Login', component: () => import('./views/Login.vue'), meta: { public: true } },
-  { path: '/register', name: 'Register', component: () => import('./views/Register.vue'), meta: { public: true } },
-  { path: '/admin/review', name: 'AdminReview', component: () => import('./views/AdminReview.vue'), meta: { requiresAdmin: true } },
+  { path: '/', name: 'Home', component: HomeView },
+  { path: '/search', name: 'Search', component: SearchView },
+  { path: '/result/:id', name: 'Result', component: ResultView, props: true },
+  { path: '/batch-insights/:batchId', name: 'BatchInsights', component: BatchInsightsView, props: true },
+  { path: '/field-extraction', name: 'FieldExtraction', component: FieldExtractionView },
+  { path: '/login', name: 'Login', component: LoginView, meta: { public: true } },
+  { path: '/register', name: 'Register', component: RegisterView, meta: { public: true } },
+  { path: '/admin/review', name: 'AdminReview', component: AdminReviewView, meta: { requiresAdmin: true } },
 ]
 
 const router = createRouter({

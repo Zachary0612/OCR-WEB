@@ -1,0 +1,24 @@
+# ============================================
+# CPU 模式覆盖配置（无 GPU 服务器）
+# 用法：docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+# ============================================
+
+services:
+  backend:
+    # 移除 GPU 相关配置
+    gpus: !reset null
+    deploy:
+      resources: {}
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://ocruser:${POSTGRES_PASSWORD:-ocr123456}@postgres:5432/ocr_db
+      - REDIS_URL=redis://redis:6379/0
+      - UPLOAD_DIR=/app/uploads
+      - CACHE_DIR=/app/.cache
+      - PADDLE_PDX_CACHE_HOME=/app/.cache/paddlex
+      - HF_HOME=/app/.cache/huggingface
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
+      - OCR_USE_GPU=false
+      - OCR_DEVICE=cpu
+      - OCR_LANG=ch
+      - AUTH_ENABLED=false
+    shm_size: 4gb

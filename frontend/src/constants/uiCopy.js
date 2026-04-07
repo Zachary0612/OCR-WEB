@@ -12,13 +12,13 @@ const MODE_META = {
   baidu_vl: {
     title: '综合识别',
     shortLabel: '综合识别',
-    description: '适合复杂版式档案材料，支持印章、表格、公式等要素提取。',
+    description: '适合复杂版式档案材料，支持印章、表格、公式等多要素识别。',
     badge: '推荐',
   },
   vl: {
     title: '综合识别',
     shortLabel: '综合识别',
-    description: '适合复杂版式档案材料，支持印章、表格、公式等要素提取。',
+    description: '适合复杂版式档案材料，支持印章、表格、公式等多要素识别。',
     badge: '推荐',
   },
   layout: {

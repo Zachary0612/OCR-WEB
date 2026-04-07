@@ -1,6 +1,14 @@
 import { computed, ref } from 'vue'
 
-import { approveUser, getAuthStatus, getPendingUsers, login as loginApi, logout as logoutApi, register as registerApi, rejectUser } from '../api/auth.js'
+import {
+  approveUser,
+  getAuthStatus,
+  getPendingUsers,
+  login as loginApi,
+  logout as logoutApi,
+  register as registerApi,
+  rejectUser,
+} from '../api/auth.js'
 
 const authLoading = ref(false)
 const authLoaded = ref(false)

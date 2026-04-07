@@ -10,9 +10,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.api.auth_routes import router as auth_router
-from app.api.routes import router as ocr_router
 from app.db.database import init_db
+from app.interfaces.api.v1 import include_v1_routers
 from app.services.task_queue import start_task_worker, stop_task_worker
 from config import (
     BASE_DIR,
@@ -72,8 +71,7 @@ app = FastAPI(
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-app.include_router(auth_router)
-app.include_router(ocr_router)
+include_v1_routers(app)
 
 VUE_DIST = BASE_DIR / "static" / "vue"
 

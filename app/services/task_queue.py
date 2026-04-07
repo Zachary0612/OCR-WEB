@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from app.core.redis_cache import TASK_TTL, cache_delete, cache_set, invalidate_lists
 from app.db.database import async_session
-from app.schemas.ocr_schemas import OCRTaskDetail
+from app.schemas.tasks import OCRTaskDetail
 from app.services.ocr_service import finalize_task_outputs, get_task_detail, run_ocr_task
 
 

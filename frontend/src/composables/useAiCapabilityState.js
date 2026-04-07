@@ -87,10 +87,8 @@ function isBackendUnavailableError(error) {
 }
 
 function isNoEligibleBatchError(error) {
-  return (
-    Number(error?.response?.status || 0) === 404 &&
+  return Number(error?.response?.status || 0) === 404 &&
     /No eligible completed tasks/i.test(buildCompactErrorText(error))
-  )
 }
 
 export function getAiAnswerSource(provider) {
@@ -101,7 +99,10 @@ export function getAiAnswerSourceLabel(provider) {
   return getAiAnswerSource(provider) === AI_ANSWER_SOURCE.RETRIEVAL ? '证据检索结果' : '智能生成结果'
 }
 
-export function normalizeAiErrorMessage(error, fallback = '智能服务暂未连通，请检查本地模型配置。') {
+export function normalizeAiErrorMessage(
+  error,
+  fallback = '智能服务暂未连通，请检查本地模型配置。'
+) {
   const compact = buildCompactErrorText(error)
   if (!compact) {
     return fallback
@@ -183,7 +184,6 @@ export function rememberAiRuntimeState(partialState = {}) {
   }
 
   rememberLatestBatchId(nextState.latestBatchId)
-
   writeStorage(STORAGE_KEYS.runtimeState, JSON.stringify(nextState))
 }
 
