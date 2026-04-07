@@ -161,7 +161,7 @@ log "  Redis 已就绪"
 # ============================================================
 log "[5/$TOTAL_STEPS] 安装 PaddlePaddle GPU（CUDA 12.3）..."
 log "  这一步可能需要 5-10 分钟..."
-pip install paddlepaddle-gpu==3.0.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu123/ 2>&1 | tail -5
+pip install paddlepaddle-gpu==3.1.0 -i https://www.paddlepaddle.org.cn/packages/stable/cu123/ 2>&1 | tail -5
 log "  PaddlePaddle 安装完成"
 
 # 验证 PaddlePaddle GPU
