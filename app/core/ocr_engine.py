@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    import ml_dtypes as _ml_dtypes  # noqa: F401
+except ImportError:  # pragma: no cover - environment dependent
+    _ml_dtypes = None
+
+try:
     import cv2
 except ImportError:  # pragma: no cover - environment dependent
     cv2 = None
@@ -31,7 +36,7 @@ MAX_IMAGE_PIXELS = 2500 * 2500
 STRUCTURED_MAX_IMAGE_PIXELS = 5000 * 5000
 
 from app.core.result_validation import normalize_table_data, table_data_to_text, table_html_to_data
-from config import BAIDU_API_KEY, BAIDU_SECRET_KEY, OCR_DEVICE, OCR_LANG, UPLOAD_DIR
+from config import BAIDU_API_KEY, BAIDU_SECRET_KEY, OCR_DEVICE, OCR_LANG, OCR_VL_BACKEND, UPLOAD_DIR
 
 
 def _cv_imread(path: str):
@@ -55,8 +60,46 @@ logger = logging.getLogger(__name__)
 _ocr_instance = None
 _layout_pipeline = None
 _vl_pipeline = None
+_paddle_bfloat16_patch_applied = False
 _UNSUPPORTED_PREDICT_ARG_RE = re.compile(r"unexpected keyword argument ['\"](?P<name>\w+)['\"]")
 _MISSING_DOC_PREPROCESSOR_RE = re.compile(r"doc_preprocessor_pipeline")
+
+
+def _patch_paddle_bfloat16_tensor_loading() -> None:
+    global _paddle_bfloat16_patch_applied
+    if _paddle_bfloat16_patch_applied or np is None:
+        return
+
+    try:
+        import paddle as _paddle
+        import paddle.tensor.creation as _paddle_creation
+    except Exception:
+        return
+
+    original_to_tensor = getattr(_paddle, "to_tensor", None)
+    if original_to_tensor is None:
+        return
+
+    def _patched_to_tensor(data, dtype=None, place=None, stop_gradient=True):
+        data_dtype = getattr(data, "dtype", None)
+        if str(data_dtype) == "bfloat16":
+            tensor = original_to_tensor(
+                np.asarray(data, dtype=np.float32),
+                dtype="float32",
+                place=place,
+                stop_gradient=stop_gradient,
+            )
+            if dtype in (None, "bfloat16", getattr(_paddle, "bfloat16", None)):
+                return tensor.astype("bfloat16")
+            if dtype in ("float32", getattr(_paddle, "float32", None)):
+                return tensor
+            return tensor.astype(dtype)
+
+        return original_to_tensor(data, dtype=dtype, place=place, stop_gradient=stop_gradient)
+
+    _paddle.to_tensor = _patched_to_tensor
+    _paddle_creation.to_tensor = _patched_to_tensor
+    _paddle_bfloat16_patch_applied = True
 
 
 def _pipeline_has_doc_preprocessor(pipeline) -> bool:
@@ -115,6 +158,18 @@ def _require_paddleocr():
 
 def _can_use_baidu_document_api() -> bool:
     return bool(str(BAIDU_API_KEY or "").strip() and str(BAIDU_SECRET_KEY or "").strip())
+
+
+def _should_use_baidu_vl_backend(mode: str) -> bool:
+    if mode == "baidu_vl":
+        return True
+    if mode != "vl":
+        return False
+    if OCR_VL_BACKEND == "local":
+        return False
+    if OCR_VL_BACKEND == "baidu":
+        return True
+    return _can_use_baidu_document_api()
 
 
 def _is_known_layout_runtime_error(exc: Exception) -> bool:
@@ -884,6 +939,7 @@ def get_vl_pipeline():
     global _vl_pipeline
     if _vl_pipeline is None:
         import os
+        _patch_paddle_bfloat16_tensor_loading()
         from paddlex import create_pipeline
         logger.info("正在初始化 PaddleOCR-VL-1.5 视觉语言模型管线 (device=%s)...", OCR_DEVICE)
         import paddle as _paddle
@@ -1501,7 +1557,7 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
 
     返回: {"page_count", "pages": [{page_num, regions?, lines}], "full_text", "mode"}
     """
-    if mode == "baidu_vl" or (mode == "vl" and BAIDU_API_KEY):
+    if _should_use_baidu_vl_backend(mode):
         return ocr_document_baidu_vl(file_path)
 
     file_ext = Path(file_path).suffix.lower()

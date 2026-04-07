@@ -42,6 +42,7 @@ export UPLOAD_DIR="/root/OCR/uploads"
 export CACHE_DIR="/root/OCR/.cache"
 export OCR_DEVICE="gpu:0"
 export OCR_LANG="ch"
+export OCR_VL_BACKEND="local"
 export AUTH_ENABLED="false"
 export PADDLE_PDX_CACHE_HOME="/root/OCR/.cache/paddlex"
 export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True

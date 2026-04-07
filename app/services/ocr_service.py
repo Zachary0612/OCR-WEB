@@ -26,9 +26,22 @@ from config import ALLOWED_EXTENSIONS, UPLOAD_DIR
 logger = logging.getLogger(__name__)
 
 
+def _ensure_vl_dtype_support() -> None:
+    try:
+        import ml_dtypes  # noqa: F401
+        import numpy as np
+
+        np.dtype("bfloat16")
+    except Exception as exc:
+        raise RuntimeError("VL 模式依赖 ml_dtypes 提供 bfloat16 支持，请安装/修复 ml_dtypes 后重试。") from exc
+
+
 def _run_ocr_document(file_path: str, mode: str):
     # Delay importing the OCR engine until a task is actually processed so
     # the API can finish startup before heavy OCR dependencies are touched.
+    if mode == "vl":
+        _ensure_vl_dtype_support()
+
     from app.core.ocr_engine import ocr_document
 
     return ocr_document(file_path, mode)

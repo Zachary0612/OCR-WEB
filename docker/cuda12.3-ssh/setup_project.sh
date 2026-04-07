@@ -258,6 +258,7 @@ export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 export FLAGS_json_format_model=0
 export OCR_DEVICE="gpu:0"
 export OCR_LANG="ch"
+export OCR_VL_BACKEND="local"
 export AUTH_ENABLED="false"
 
 cd /root/OCR

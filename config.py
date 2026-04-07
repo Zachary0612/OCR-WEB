@@ -9,6 +9,13 @@ def _env_flag(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_choice(name: str, default: str, allowed: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    if value in allowed:
+        return value
+    return default
+
+
 def _build_path_roots(raw_value: str, defaults: list[Path]) -> tuple[Path, ...]:
     roots: list[Path] = []
     for item in raw_value.split(","):
@@ -86,6 +93,7 @@ MAX_FILE_SIZE = 50 * 1024 * 1024
 OCR_USE_GPU = _env_flag("OCR_USE_GPU", True)
 OCR_DEVICE = os.getenv("OCR_DEVICE", "gpu:0" if OCR_USE_GPU else "cpu")
 OCR_LANG = os.getenv("OCR_LANG", "ch")
+OCR_VL_BACKEND = _env_choice("OCR_VL_BACKEND", "auto", {"auto", "local", "baidu"})
 
 # Auth
 AUTH_ENABLED = _env_flag("AUTH_ENABLED", False)
