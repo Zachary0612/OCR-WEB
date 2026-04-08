@@ -52,6 +52,12 @@ async def enqueue_task(job: OCRJob) -> None:
         await start_task_worker()
     assert _queue is not None
     await _queue.put(job)
+    logger.info(
+        "enqueue_task queued job: task_id=%s, mode=%s, queue_size=%s",
+        job.task_id,
+        job.mode,
+        _queue.qsize(),
+    )
     cache_delete(f"task:{job.task_id}")
     invalidate_lists()
 
@@ -60,6 +66,12 @@ async def _worker_loop() -> None:
     assert _queue is not None
     while True:
         job = await _queue.get()
+        logger.info(
+            "OCR worker dequeued job: task_id=%s, mode=%s, remaining_queue=%s",
+            job.task_id,
+            job.mode,
+            _queue.qsize(),
+        )
         try:
             await _process_job(job)
         except asyncio.CancelledError:
@@ -72,6 +84,7 @@ async def _worker_loop() -> None:
 
 async def _process_job(job: OCRJob) -> None:
     async with async_session() as db:
+        logger.info("OCR worker processing job: task_id=%s, mode=%s", job.task_id, job.mode)
         cache_delete(f"task:{job.task_id}")
         task = await run_ocr_task(db, job.task_id, mode=job.mode)
         task = await finalize_task_outputs(
@@ -91,3 +104,9 @@ async def _process_job(job: OCRJob) -> None:
         else:
             cache_delete(f"task:{detail.id}")
         invalidate_lists()
+        logger.info(
+            "OCR worker finished job: task_id=%s, mode=%s, status=%s",
+            job.task_id,
+            job.mode,
+            detail.status,
+        )

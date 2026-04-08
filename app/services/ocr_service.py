@@ -1,7 +1,9 @@
 import asyncio
+import faulthandler
 import gc
 import json
 import logging
+import threading
 import uuid
 from pathlib import Path
 
@@ -37,14 +39,28 @@ def _ensure_vl_dtype_support() -> None:
 
 
 def _run_ocr_document(file_path: str, mode: str):
+    logger.info("_run_ocr_document entered: mode=%s, file=%s, thread=%s", mode, Path(file_path).name, threading.get_ident())
     # Delay importing the OCR engine until a task is actually processed so
     # the API can finish startup before heavy OCR dependencies are touched.
     if mode == "vl":
         _ensure_vl_dtype_support()
+        try:
+            faulthandler.enable()
+            faulthandler.dump_traceback_later(120, repeat=True)
+        except Exception:
+            pass
 
-    from app.core.ocr_engine import ocr_document
+    try:
+        from app.core.ocr_engine import ocr_document
 
-    return ocr_document(file_path, mode)
+        logger.info("_run_ocr_document imported ocr_document: mode=%s, file=%s", mode, Path(file_path).name)
+        return ocr_document(file_path, mode)
+    finally:
+        if mode == "vl":
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:
+                pass
 
 
 async def save_upload_file(filename: str, file_content: bytes, relative_path: str = "") -> tuple[str, str]:
@@ -101,12 +117,21 @@ async def run_ocr_task(db: AsyncSession, task_id: int, mode: str = "layout") -> 
     if not task:
         raise ValueError(f"Task not found: {task_id}")
 
+    logger.info(
+        "run_ocr_task begin: task_id=%s, mode=%s, file=%s, current_status=%s",
+        task.id,
+        mode,
+        Path(task.file_path).name,
+        task.status,
+    )
+
     task.status = "processing"
     task.error_message = None
     await db.commit()
 
     timeout = _MODE_TIMEOUT.get(mode, 300)
     try:
+        logger.info("run_ocr_task dispatching to worker thread: task_id=%s, mode=%s, timeout=%ss", task.id, mode, timeout)
         result = await asyncio.wait_for(
             asyncio.to_thread(_run_ocr_document, task.file_path, mode),
             timeout=timeout,

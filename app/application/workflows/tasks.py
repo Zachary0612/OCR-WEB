@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 
 from sqlalchemy import func, or_, select
@@ -26,6 +27,7 @@ from app.schemas.tasks import OCRTaskDetail, OCRTaskOut, TaskProgressItem, TaskP
 from app.shared.contracts import TaskProgressSnapshot
 
 TERMINAL_STATUSES = {"done", "failed"}
+logger = logging.getLogger(__name__)
 
 
 def task_payload(task: OCRTask) -> dict:
@@ -47,6 +49,12 @@ async def submit_upload_task(
     """Store file, create task, and enqueue OCR processing."""
     file_path, file_type = await task_service.save_upload_file(filename, content, relative_path)
     task = await task_service.create_task(db, filename, file_path, file_type, mode=mode)
+    logger.info(
+        "submit_upload_task created task: id=%s, mode=%s, file=%s",
+        task.id,
+        mode,
+        file_path,
+    )
     await enqueue_task(
         OCRJob(
             task_id=task.id,
@@ -57,6 +65,7 @@ async def submit_upload_task(
             batch_id=batch_id,
         )
     )
+    logger.info("submit_upload_task enqueued task: id=%s, mode=%s", task.id, mode)
     return task
 
 
@@ -79,6 +88,12 @@ async def submit_path_task(
         path_obj.suffix.lower(),
         mode=mode,
     )
+    logger.info(
+        "submit_path_task created task: id=%s, mode=%s, file=%s",
+        task.id,
+        mode,
+        file_path,
+    )
     await enqueue_task(
         OCRJob(
             task_id=task.id,
@@ -89,6 +104,7 @@ async def submit_path_task(
             batch_id=batch_id,
         )
     )
+    logger.info("submit_path_task enqueued task: id=%s, mode=%s", task.id, mode)
     return task
 
 
