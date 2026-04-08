@@ -19,6 +19,7 @@ from config import (
     MINIMAX_BASE_URL,
     MINIMAX_ENABLED,
     MINIMAX_MODEL,
+    OCR_VL_BACKEND,
     _mask_secret,
 )
 
@@ -49,6 +50,14 @@ async def lifespan(_: FastAPI):
     logger.info("Startup checkpoint: init_db begin")
     await init_db()
     logger.info("Startup checkpoint: init_db complete")
+    if OCR_VL_BACKEND == "local":
+        logger.info("Startup checkpoint: vl pipeline preload begin")
+        from app.core.ocr_engine import get_vl_pipeline
+
+        get_vl_pipeline()
+        logger.info("Startup checkpoint: vl pipeline preload complete")
+    else:
+        logger.info("Startup checkpoint: vl pipeline preload skipped (OCR_VL_BACKEND=%s)", OCR_VL_BACKEND)
     logger.info("Startup checkpoint: task worker begin")
     await start_task_worker()
     logger.info("Startup checkpoint: task worker complete")
