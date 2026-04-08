@@ -1557,7 +1557,12 @@ def ocr_document(file_path: str, mode: str = "layout") -> dict:
 
     返回: {"page_count", "pages": [{page_num, regions?, lines}], "full_text", "mode"}
     """
-    if _should_use_baidu_vl_backend(mode):
+    use_baidu = _should_use_baidu_vl_backend(mode)
+    logger.info(
+        "ocr_document 路由: mode=%s, OCR_VL_BACKEND=%s, use_baidu=%s",
+        mode, OCR_VL_BACKEND, use_baidu,
+    )
+    if use_baidu:
         return ocr_document_baidu_vl(file_path)
 
     file_ext = Path(file_path).suffix.lower()
