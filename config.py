@@ -70,11 +70,11 @@ _load_local_env_file(BASE_DIR / ".env")
 # Cache and model download directories
 CACHE_DIR = Path(os.getenv("CACHE_DIR", str(BASE_DIR / ".cache"))).resolve(strict=False)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-os.environ["HF_HOME"] = str(CACHE_DIR / "huggingface")
-os.environ["PADDLE_PDX_CACHE_HOME"] = str(CACHE_DIR / "paddlex")
-os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
-os.environ["PADDLE_PDX_MODEL_SOURCE"] = "bos"
-os.environ["FLAGS_json_format_model"] = "0"
+os.environ.setdefault("HF_HOME", str(CACHE_DIR / "huggingface"))
+os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(CACHE_DIR / "paddlex"))
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+os.environ.setdefault("PADDLE_PDX_MODEL_SOURCE", "bos")
+os.environ.setdefault("FLAGS_json_format_model", "0")
 
 # Database and Redis
 DATABASE_URL = os.getenv(

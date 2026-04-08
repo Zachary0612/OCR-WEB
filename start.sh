@@ -44,10 +44,10 @@ export OCR_DEVICE="gpu:0"
 export OCR_LANG="ch"
 export OCR_VL_BACKEND="local"
 export AUTH_ENABLED="false"
-export PADDLE_PDX_CACHE_HOME="/root/OCR/.cache/paddlex"
+export PADDLE_PDX_CACHE_HOME="/root/.paddlex"
 export PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 export FLAGS_json_format_model=0
-export HF_HOME="/root/OCR/.cache/huggingface"
+export HF_HOME="/root/.cache/huggingface"
 
 # ---- 5. 确保目录存在 ----
 mkdir -p /root/OCR/uploads /root/OCR/.cache /root/OCR/logs
